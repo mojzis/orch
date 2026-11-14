@@ -49,10 +49,9 @@ uv run pytest -m integration -o addopts= tests/test_live.py   # live smoke, ~1 c
      code. It is only in the dev template.
    - An end-to-end fake test for "a planner change to a repo's default scenario or
      effort must carry a reason". Only `check_outline` has a unit test.
-4. **Unverified assumption:** orch materializes the winning skill templates into
-   `.orch/.cache/skills/.claude/skills/` and passes them with `--add-dir`. If the user
-   has a personal `~/.claude/skills/orch-dev`, Claude Code may prefer that one. Test
-   it live, and if it does, prefix the materialized names or warn in `orch config`.
+4. ~~Unverified assumption~~: tested live in session 2. A personal skill did win, so
+   templates are now materialized and invoked as `orchskill-<name>`
+   (`test_live.py::test_materialized_skill_beats_a_personal_one`).
 
 ## Spec open questions (still open)
 

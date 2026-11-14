@@ -38,9 +38,9 @@ def test_materialize_copies_only_the_winner(layers: L.Layers, tmp_path: Path) ->
     _skill(layers.user, "orch-qa", "USER")
     _skill(layers.repo, "orch-qa", "REPO")
     dest = L.materialize_skills(layers, tmp_path / "cache")
-    text = (dest / ".claude" / "skills" / "orch-qa" / "SKILL.md").read_text()
-    assert "REPO" in text
-    assert (dest / ".claude" / "skills" / "orch-dev" / "SKILL.md").is_file()
+    text = (dest / ".claude/skills/orchskill-orch-qa/SKILL.md").read_text()
+    assert ("REPO" in text, "name: orchskill-orch-qa" in text) == (True, True)
+    assert (dest / ".claude/skills/orchskill-orch-dev/SKILL.md").is_file()
 
 
 def test_default_full_scenario_resolves(layers: L.Layers) -> None:
@@ -189,4 +189,4 @@ def test_non_orch_named_template_is_materialized(
 ) -> None:
     _skill(layers.repo, "my-qa", "MINE")
     dest = L.materialize_skills(layers, tmp_path / "cache")
-    assert (dest / ".claude" / "skills" / "my-qa" / "SKILL.md").is_file()
+    assert (dest / ".claude/skills/orchskill-my-qa/SKILL.md").is_file()

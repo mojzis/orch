@@ -8,6 +8,7 @@ $ORCH_CONFIG_HOME) -> repo (.orch/) -> task (pitch frontmatter, outline row,
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tomllib
 from dataclasses import dataclass, replace
@@ -15,7 +16,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from orch.claude import READ_BASH_TOOLS, StepConfig
+from orch.claude import READ_BASH_TOOLS, SKILL_PREFIX, StepConfig
 from orch.errors import ConfigError
 from orch.scenario import ROLES, Scenario, validate
 
@@ -345,14 +346,27 @@ def materialize_skills(layers: Layers, dest: Path) -> Path:
     """Copy the winning version of every template to `dest/.claude/skills/` and
     return `dest`, to be passed with --add-dir. Claude Code ranks a personal skill
     above a project one, the reverse of what a repo override needs, so orch picks
-    the winner itself."""
+    the winner itself, and names it with SKILL_PREFIX so that a personal skill of
+    the same name cannot shadow it (checked live in test_live)."""
     skills = dest / ".claude" / "skills"
     if skills.exists():
         shutil.rmtree(skills)
     skills.mkdir(parents=True)
     for name in list_templates(layers):
         _layer, src = find_template(layers, name)
-        shutil.copytree(src, skills / name)
+        out = skills / f"{SKILL_PREFIX}{name}"
+        shutil.copytree(src, out)
+        md = out / "SKILL.md"
+        md.write_text(
+            re.sub(
+                r"^name:\s*\S+",
+                f"name: {SKILL_PREFIX}{name}",
+                md.read_text(encoding="utf-8"),
+                count=1,
+                flags=re.M,
+            ),
+            encoding="utf-8",
+        )
     return dest
 
 

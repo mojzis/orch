@@ -61,8 +61,14 @@ def claude_bin() -> str:
     return os.environ.get("ORCH_CLAUDE_BIN", "claude")
 
 
+# Templates are materialized under this prefix (see layers.materialize_skills):
+# Claude Code ranks a personal ~/.claude/skills/<name> above an --add-dir one, so
+# orch's own copy needs a name no personal skill has.
+SKILL_PREFIX = "orchskill-"
+
+
 def build_prompt(cfg: StepConfig, args: str) -> str:
-    prompt = f"/{cfg.template} {args}".rstrip()
+    prompt = f"/{SKILL_PREFIX}{cfg.template} {args}".rstrip()
     if cfg.extra:
         prompt += f"\n\nExtra instructions for this step:\n{cfg.extra}"
     return prompt

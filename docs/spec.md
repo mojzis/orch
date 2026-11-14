@@ -171,7 +171,7 @@ Each layer overrides the one above it, per scenario, template, model and effort:
 3. Repo: `.orch/scenarios/` and `.orch/skills/`, committed with the project.
 4. Task: the pitch frontmatter (for example `scenario: small` for the whole run), one phase's row in the outline, or `orch run --scenario`.
 
-orch resolves the layers itself. Claude Code ranks a personal skill above a project one, the opposite of what is needed here, so orch copies the winning version of each template into the run's own folder and loads it from there with `--add-dir`. `orch config` prints, for every step, the scenario and template in use and the layer each came from. `orch eject orch-qa` copies a default template into `.orch/skills/` so you can edit it.
+orch resolves the layers itself. Claude Code ranks a personal skill above a project one, the opposite of what is needed here, so orch copies the winning version of each template into the run's own folder and loads it from there with `--add-dir`, under the name `orchskill-<template>`: a live test showed a personal `~/.claude/skills/<template>` otherwise wins over the `--add-dir` copy. `orch config` prints, for every step, the scenario and template in use and the layer each came from. `orch eject orch-qa` copies a default template into `.orch/skills/` so you can edit it.
 
 ### The planner chooses
 

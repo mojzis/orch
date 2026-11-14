@@ -83,8 +83,8 @@ def test_argv_carries_role_settings(tmp_path: Path) -> None:
 
 def test_prompt_invokes_the_skill_with_args_and_extra() -> None:
     cfg = StepConfig(step="qa", template="orch-qa", extra="open the CSV export")
-    prompt = claude.build_prompt(cfg, ".orch/phases/01-a/inputs/qa.md")
-    assert prompt.startswith("/orch-qa .orch/phases/01-a/inputs/qa.md")
+    prompt = claude.build_prompt(cfg, "inputs.md")
+    assert prompt.startswith(f"/{claude.SKILL_PREFIX}orch-qa inputs.md")
     assert prompt.endswith("open the CSV export")
 
 

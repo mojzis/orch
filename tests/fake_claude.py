@@ -66,6 +66,7 @@ def main() -> int:
     script = Path(os.environ["ORCH_FAKE_SCRIPT"])
     prompt = _flag(argv, "-p") or ""
     template = prompt.split()[0].lstrip("/") if prompt.startswith("/") else ""
+    template = template.removeprefix("orchskill-")
     session = _flag(argv, "--session-id") or _flag(argv, "--resume") or ""
     cwd = Path.cwd()
 
