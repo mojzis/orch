@@ -88,3 +88,12 @@ def test_failing_command_fails_gate(repo: tuple[Path, str]) -> None:
     res = run_gate(r, GateSpec("echo nope; exit 3", GLOBS, ()), base)
     assert (res.ok, res.returncode, res.output.strip()) == (False, 3, "nope")
     assert res.summary() == "`echo nope; exit 3` exited 3"
+
+
+def test_caches_are_not_uncommitted_changes(repo: tuple[Path, str]) -> None:
+    r, base = repo
+    (r / "tests" / "__pycache__").mkdir()
+    (r / "tests" / "__pycache__" / "test_a.cpython-313.pyc").write_text("x")
+    (r / "notes.txt").write_text("x")
+    spec = GateSpec("", GLOBS, (), dirty_ignore=("*__pycache__/*",))
+    assert run_gate(r, spec, base).violations == ["uncommitted changes: notes.txt"]

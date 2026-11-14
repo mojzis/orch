@@ -91,6 +91,7 @@ class GateSpec:
     test_globs: tuple[str, ...]
     protected: tuple[str, ...]
     timeout_s: int = 1800
+    dirty_ignore: tuple[str, ...] = ()
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> GateSpec:
@@ -99,12 +100,15 @@ class GateSpec:
             test_globs=tuple(config.get("test_globs") or ()),
             protected=tuple(config.get("protected") or ()),
             timeout_s=int(config.get("gate_timeout_s") or 1800),
+            dirty_ignore=tuple(config.get("dirty_ignore") or ()),
         )
 
 
 def run_gate(cwd: Path, spec: GateSpec, base: str) -> GateResult:
     gate_cmd, timeout_s = spec.cmd, spec.timeout_s
-    dirty = gitops.dirty_files(cwd)  # before the command makes its own files
+    dirty = [  # before the command makes its own files
+        p for p in gitops.dirty_files(cwd) if not _matches(p, list(spec.dirty_ignore))
+    ]
     code: int | None = None
     output = ""
     if gate_cmd:

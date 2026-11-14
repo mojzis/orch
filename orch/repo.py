@@ -23,6 +23,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "**/test_*.py",
         "**/*_test.py",
     ],
+    # untracked build and tool caches the clean-tree check ignores
+    "dirty_ignore": [
+        "*__pycache__/*",
+        "*.pyc",
+        ".pytest_cache/*",
+        ".ruff_cache/*",
+        ".mypy_cache/*",
+        ".coverage",
+        "node_modules/*",
+    ],
     # files a session must not change: oracles, and orch's own config and briefs
     "protected": [
         "QA.md",
