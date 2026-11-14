@@ -68,11 +68,15 @@ def run(
     pause: Annotated[
         bool, typer.Option("--pause", help="Stop after planning, to read the plan.")
     ] = False,
+    wait: Annotated[
+        bool,
+        typer.Option("--wait", help="On a usage limit, sleep until it resets."),
+    ] = False,
 ) -> None:
     """Run (or resume) the phase loop on the run branch, planning first if there
     is a docs/pitch.md and no run yet. Exit 0 when every phase is done (or
     --pause stopped after the plan), 3 when stopped (fix, then re-run to resume),
-    75 on a usage limit."""
+    75 on a usage limit, 130 when interrupted (re-run to resume)."""
     try:
         st = planning.run(
             find_repo(),
@@ -80,6 +84,7 @@ def run(
             sets=sets,
             auto_decide=auto_decide,
             pause=pause,
+            wait=wait,
         )
     except OrchError as e:
         raise _fail(e) from None
@@ -108,9 +113,22 @@ def _exit_with(st: S.RunState, ok: tuple[str, ...]) -> None:
     _print_status(st)
     if st.status in ok:
         return
-    if st.status == S.PAUSED and st.reset_at:
+    if st.status == S.PAUSED and st.stop_kind == "usage_limit":
         raise typer.Exit(loop.EXIT_PAUSED)
+    if st.status == S.PAUSED and st.stop_kind == "interrupted":
+        raise typer.Exit(loop.EXIT_INTERRUPTED)
     raise typer.Exit(3)
+
+
+@app.command()
+def report() -> None:
+    """Write .orch/report.md for the run as it is now and print its path."""
+    try:
+        repo = find_repo()
+        path = loop.write_report(repo, loop.load_state(repo), None)
+    except OrchError as e:
+        raise _fail(e) from None
+    console.print(str(path), markup=False)
 
 
 @app.command()

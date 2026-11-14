@@ -47,6 +47,8 @@ class Phase:
     status: str = "todo"  # todo | running | done | blocked | failed
     done_steps: list[str] = field(default_factory=list)
     fix_round: int = 0
+    attempt: int = 0  # bumped when a blocked phase is reopened
+    deferred: list[str] = field(default_factory=list)  # finding ids in the backlog
     lead_session: str | None = None
     lead_cost_total: float = 0.0
     sessions: list[SessionRecord] = field(default_factory=list)
@@ -76,11 +78,13 @@ class RunState:
     status: str = RUNNING
     stop_reason: str = ""
     reset_at: str | None = None
+    stop_kind: str = ""  # usage_limit | interrupted | ""
     claude_version: str = ""
     started_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)
     phases: list[Phase] = field(default_factory=list)
-    pending: dict[str, str] | None = None  # session in flight: key, role, id
+    # sessions in flight, by step key -> session id; an interrupted one is resumed
+    pending: dict[str, str] = field(default_factory=dict)
     replans: list[dict[str, Any]] = field(default_factory=list)
     plan_sessions: list[SessionRecord] = field(default_factory=list)
     auto_decide: bool = False
@@ -108,6 +112,10 @@ def _from_dict(cls: Any, data: dict[str, Any]) -> Any:
 
 def load(path: Path) -> RunState:
     data = store.read_json(path)
+    if data.get("version", STATE_VERSION) > STATE_VERSION:
+        raise ValueError(f"state version {data['version']} is newer than this orch")
+    if not isinstance(data.get("pending"), dict):
+        data["pending"] = {}
     plan_sessions = [
         _from_dict(SessionRecord, s) for s in data.get("plan_sessions", [])
     ]

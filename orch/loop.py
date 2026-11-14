@@ -3,12 +3,14 @@ check; the lead session makes the judgment calls through structured output."""
 
 from __future__ import annotations
 
+import contextlib
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -20,25 +22,37 @@ import yaml
 from orch import claude, gitops, render, store
 from orch import layers as L
 from orch import state as S
-from orch.errors import ConfigError, StepError
+from orch.errors import ConfigError, OrchError
 from orch.gate import GateResult, GateSpec, run_gate
 from orch.lead import check_add_checks, check_triage
 from orch.repo import Repo
+from orch.report import render_report
 from orch.scenario import Scenario
 from orch.schemas import SCHEMAS
 
 EXIT_PAUSED = 75
+EXIT_INTERRUPTED = 130
+# when parallel sessions stop differently, the most actionable state wins
+STOP_RANK = {S.PAUSED: 0, S.NEEDS_USER: 1, S.BLOCKED: 2, S.NEEDS_REPLAN: 3, S.FAILED: 4}
 _LOCK = threading.Lock()
+INTERRUPTED = threading.Event()
 
 
 class StopRun(Exception):
     """Ends `orch run` in a stop state; the next `orch run` resumes."""
 
-    def __init__(self, status: str, reason: str, reset_at: str | None = None) -> None:
+    def __init__(
+        self,
+        status: str,
+        reason: str,
+        reset_at: str | None = None,
+        kind: str = "",
+    ) -> None:
         super().__init__(reason)
         self.status = status
         self.reason = reason
         self.reset_at = reset_at
+        self.kind = kind  # usage_limit | interrupted | empty
 
 
 @dataclass
@@ -140,8 +154,38 @@ def load_state(repo: Repo) -> S.RunState:
         ) from None
 
 
-def new_run_id() -> str:
-    return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+def archive_run(repo: Repo) -> Path:
+    """Move a finished run's records to .orch/runs/<run-id>/ so a new run can
+    start; phase folders of that run go with it, new hand-written ones stay."""
+    st = load_state(repo)
+    dest = repo.orch / "runs" / st.run_id
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "state.json",
+        "PROGRESS.md",
+        "plan.md",
+        "report.md",
+        "full-qa.json",
+        "plan",
+    ):
+        if (repo.orch / name).exists():
+            shutil.move(repo.orch / name, dest / name)
+    for p in st.phases:
+        if (d := repo.phase_dir(p.dirname)).exists():
+            (dest / "phases").mkdir(exist_ok=True)
+            shutil.move(d, dest / "phases" / p.dirname)
+    return dest
+
+
+def new_run_id(root: Path | None = None) -> str:
+    base = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    run_id, n = base, 1
+    while root is not None and gitops.git(
+        root, "rev-parse", "--verify", "--quiet", f"orch/{run_id}", check=False
+    ):
+        n += 1
+        run_id = f"{base}-{n}"
+    return run_id
 
 
 def ensure_gitignore(repo: Repo) -> None:
@@ -163,6 +207,8 @@ def start_or_resume(
     cli_sets = L.parse_sets(sets or [])
     if scenario:
         L.load_scenario(layers, scenario)  # fail early on a bad name
+    if repo.state_path.is_file() and load_state(repo).status == S.DONE:
+        archive_run(repo)  # a finished (maybe merged) run: start a new one
     if repo.state_path.is_file():
         st = load_state(repo)
         if gitops.current_branch(repo.root) != st.branch:
@@ -180,7 +226,7 @@ def start_or_resume(
                 "no phases to run",
                 hint="run `orch plan` first, or write .orch/phases/01-<slug>/brief.md",
             )
-        run_id = new_run_id()
+        run_id = new_run_id(repo.root)
         st = S.RunState(run_id=run_id, branch=f"orch/{run_id}", phases=found)
         gitops.ensure_branch(repo.root, st.branch)
     ensure_gitignore(repo)
@@ -207,21 +253,52 @@ def execute(run: Run) -> S.RunState:
         _reopen_current(st)
     elif (ph := st.current()) is not None and ph.status == S.FAILED:
         ph.status = "running"  # a crash: carry on exactly where it stopped
-    st.status, st.stop_reason, st.reset_at = S.RUNNING, "", None
+    st.status, st.stop_reason, st.reset_at, st.stop_kind = S.RUNNING, "", None, ""
     st.claude_version = claude.claude_version()
     run.skills_dir = L.materialize_skills(run.layers, run.repo.cache / "skills")
     run.save()
+    INTERRUPTED.clear()
     try:
-        while (ph := st.current()) is not None:
-            run_phase(run, ph)
+        with _sigint_forwarding():
+            while (ph := st.current()) is not None:
+                run_phase(run, ph)
+            finish(run)
         st.status = S.DONE
     except StopRun as stop:
         st.status, st.stop_reason, st.reset_at = stop.status, stop.reason, stop.reset_at
+        st.stop_kind = stop.kind
         if (ph := st.current()) is not None and stop.status in (S.BLOCKED, S.FAILED):
             ph.status = stop.status
+    except (OrchError, OSError) as e:
+        st.status, st.stop_reason = S.FAILED, f"{type(e).__name__}: {e}"
+        if (ph := st.current()) is not None:
+            ph.status = S.FAILED
     run.save()
     _commit_orch(run, f"orch: run {st.status}")
+    with contextlib.suppress(OrchError):
+        _push(run)
     return st
+
+
+@contextlib.contextmanager
+def _sigint_forwarding() -> Generator[None]:
+    """First Ctrl+C: forward SIGINT to the running sessions so their turn is
+    recorded, then stop as `paused`. Second Ctrl+C: the default, exit now."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def handler(signum: int, frame: object) -> None:
+        del signum, frame
+        INTERRUPTED.set()
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        claude.interrupt_children()
+
+    previous = signal.signal(signal.SIGINT, handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 def _reopen_current(st: S.RunState) -> None:
@@ -230,10 +307,11 @@ def _reopen_current(st: S.RunState) -> None:
     ph = st.current()
     if ph is None:
         return
-    if "dev" in ph.done_steps:
-        ph.done_steps = ph.done_steps[: ph.done_steps.index("dev") + 1]
-    else:
-        ph.done_steps = []
+    keep = ph.done_steps.index("dev") + 1 if "dev" in ph.done_steps else 0
+    ph.done_steps = ph.done_steps[:keep] + [
+        k for k in ph.done_steps[keep:] if k.startswith("defer#")
+    ]
+    ph.attempt += 1
     ph.fix_round = 0
     ph.status = "running"
 
@@ -315,8 +393,7 @@ def check_and_fix(
     rnd = 0  # rounds replay from done_steps on resume, so count locally
     while True:
         if all(r.get("verdict") == "ship" for r in reports.values()):
-            if not sc.has("triage"):
-                _defer(run, ph, reports, None, rnd)
+            _defer(run, ph, reports, None, rnd)
             break
         tri = None
         if sc.has("triage"):
@@ -399,17 +476,23 @@ def review_qa(run: Run, ph: S.Phase, checks: list[dict[str, Any]]) -> dict[str, 
     """Review and QA in parallel, each in its own detached worktree."""
     todo = [r for r in ("review", "qa") if r not in ph.done_steps]
     if todo:
+        # the worktree is made from HEAD: inputs must be committed before it
+        for r in todo:
+            _write_inputs(run, ph, r, _checker_inputs(run, ph, r, checks))
+        run.save()
         _commit_orch(run, f"orch: phase {ph.n} before review/qa")
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = {r: pool.submit(_in_worktree, run, ph, r, checks) for r in todo}
-            errors = []
+            errors: list[StopRun] = []
             for f in futures.values():
                 try:
                     f.result()
-                except (StopRun, StepError) as e:
+                except StopRun as e:
                     errors.append(e)
+                except OrchError as e:
+                    errors.append(StopRun(S.FAILED, str(e)))
             if errors:
-                raise errors[0]
+                raise min(errors, key=lambda e: STOP_RANK.get(e.status, 99))
     return {r: store.read_json(_report_path(run, ph, r)) for r in ("review", "qa")}
 
 
@@ -421,9 +504,14 @@ def _in_worktree(
     gitops.add_worktree(run.root, wt)
     try:
         if cmd := str(run.config.get("setup_cmd") or ""):
-            subprocess.run(  # noqa: S602 -- setup_cmd is the repo's own config
-                cmd, shell=True, cwd=wt, check=False, capture_output=True
+            proc = subprocess.run(  # noqa: S602 -- setup_cmd is the repo's own config
+                cmd, shell=True, cwd=wt, check=False, capture_output=True, text=True
             )
+            if proc.returncode != 0:
+                tail = (proc.stdout + proc.stderr).strip()[-500:]
+                raise StopRun(
+                    S.FAILED, f"setup_cmd `{cmd}` failed in a {role} worktree: {tail}"
+                )
         worker(run, ph, role, role, _checker_inputs(run, ph, role, checks), cwd=wt)
     finally:
         gitops.remove_worktree(run.root, wt)
@@ -594,6 +682,34 @@ def _answers(run: Run, ph: S.Phase) -> str | None:
     return "\n".join(out)
 
 
+def finish(run: Run) -> None:
+    """After the last phase: the slowest QA tier, then the run report."""
+    final: dict[str, Any] | None = None
+    if cmd := str(run.config.get("full_qa_cmd") or ""):
+        proc = subprocess.run(  # noqa: S602 -- the repo's own config
+            cmd, shell=True, cwd=run.root, capture_output=True, text=True, check=False
+        )
+        final = {
+            "cmd": cmd,
+            "returncode": proc.returncode,
+            "output": (proc.stdout + proc.stderr)[-4000:],
+        }
+        store.write_json(run.repo.orch / "full-qa.json", final)
+    write_report(run.repo, run.st, final)
+
+
+def write_report(repo: Repo, st: S.RunState, final: dict[str, Any] | None) -> Path:
+    from orch.planning import requirement_ids  # noqa: PLC0415 -- avoids an import cycle
+
+    pitch = repo.root / "docs" / "pitch.md"
+    req_ids = (
+        requirement_ids(pitch.read_text(encoding="utf-8")) if pitch.is_file() else []
+    )
+    path = repo.orch / "report.md"
+    store.write_text(path, render_report(repo.root, st, req_ids, final))
+    return path
+
+
 def record(run: Run, ph: S.Phase) -> None:
     pdir = run.repo.phase_dir(ph.dirname)
     rep = lead(run, ph, "learnings", "learnings", _learnings_inputs(run, ph))
@@ -658,24 +774,26 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
 ) -> dict[str, Any]:
     if key in ph.done_steps:
         return store.read_json(_report_path(run, ph, key))
-    pdir = run.repo.phase_dir(ph.dirname)
-    inputs_path = pdir / "inputs" / f"{_safe(key)}.md"
-    store.write_text(inputs_path, inputs)
-    if cwd is None and role in ("dev", "fix"):
-        _commit_orch(run, f"orch: phase {ph.n} before {key}")
+    inputs_path = _write_inputs(run, ph, key, inputs)
     res = L.resolve_role(
         run.layers, L.load_scenario(run.layers, ph.scenario), role, run.task(ph)
     )
     schema = SCHEMAS[role]
     add_dirs = (run.skills_dir,) if run.skills_dir else ()
     attempts = 0
+    retry_sid: str | None = None
     while True:
         attempts += 1
-        resume = is_lead and ph.lead_session is not None
-        sid = ph.lead_session if resume else claude.new_session_id()
+        carry_on = retry_sid or run.st.pending.get(key)
+        resume = bool(carry_on) or (is_lead and ph.lead_session is not None)
+        sid = carry_on or (ph.lead_session if resume else claude.new_session_id())
         with _LOCK:
-            run.st.pending = {"key": key, "role": role, "session_id": str(sid)}
+            run.st.pending[key] = str(sid)
         run.save()
+        if cwd is None and role in ("dev", "fix"):
+            # commit orch's files (pending included) so dev's `git add -A` and the
+            # gate's clean-tree check never see them
+            _commit_orch(run, f"orch: phase {ph.n} before {key}")
         r = claude.run_session(
             res.config,
             run.rel(inputs_path),
@@ -683,13 +801,21 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
             schema=schema,
             session_id=sid,
             resume=resume,
-            prev_cost=ph.lead_cost_total if resume else 0.0,
+            prev_cost=_prev_cost(ph, key, sid, is_lead),
             add_dirs=add_dirs,
         )
         _record_session(run, ph, key, role, r)
-        if is_lead:
+        if is_lead and (r.ok or resume):
             ph.lead_session = r.session_id
             ph.lead_cost_total = r.cost_total
+        if INTERRUPTED.is_set():
+            raise StopRun(
+                S.PAUSED,
+                f"interrupted during {key}; `orch run` resumes that session",
+                kind="interrupted",
+            )
+        with _LOCK:
+            run.st.pending.pop(key, None)
         if r.ok and r.structured is not None:
             problem = check(r.structured) if check else ""
             if not problem:
@@ -702,25 +828,53 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
                 "Answer again, fixing exactly this.\n",
             )
             continue
-        if r.error_kind == "usage_limit":
-            raise StopRun(S.PAUSED, f"usage limit during {key}", r.reset_at)
-        if r.error_kind == "auth":
-            raise StopRun(S.NEEDS_USER, f"claude auth failed during {key}: {r.error}")
+        _stop_unless_retryable(run, ph, key, r, res.config)
         if is_lead and resume:
             # the lead's session may live on another machine: start it fresh
             ph.lead_session, ph.lead_cost_total = None, 0.0
+        elif r.error_kind == "bad_output" or role in ("dev", "fix"):
+            # ask the same session for its report rather than redoing the work
+            retry_sid = r.session_id
         if attempts >= 2:  # noqa: PLR2004 -- one retry, then stop
             raise StopRun(
                 S.FAILED,
                 f"phase {ph.n} {key}: {r.error_kind}: {r.error[:300]}",
             )
-    with _LOCK:
-        run.st.pending = None
     report = r.structured or {}
     _save_report(
         run, ph, key, role=role, session=r.session_id, cost=r.cost_delta, report=report
     )
     return report
+
+
+def _stop_unless_retryable(
+    run: Run, ph: S.Phase, key: str, r: claude.SessionResult, cfg: claude.StepConfig
+) -> None:
+    """A usage limit, an auth failure or an exhausted budget stop the run; the
+    session is kept as pending so `orch run` carries on in it."""
+    if r.error_kind in ("usage_limit", "budget"):
+        with _LOCK:
+            run.st.pending[key] = r.session_id
+    if r.error_kind == "usage_limit":
+        raise StopRun(
+            S.PAUSED, f"usage limit during {key}", r.reset_at, kind="usage_limit"
+        )
+    if r.error_kind == "auth":
+        raise StopRun(S.NEEDS_USER, f"claude auth failed during {key}: {r.error}")
+    if r.error_kind == "budget":
+        raise StopRun(
+            S.NEEDS_USER,
+            f"phase {ph.n} {key} hit max_budget_usd ({cfg.max_budget_usd}); raise it "
+            f"with --set {cfg.step}.max_budget_usd=<usd>, then `orch run`",
+        )
+
+
+def _prev_cost(ph: S.Phase, key: str, sid: str | None, is_lead: bool) -> float:
+    """What the session had cost before this call: claude reports totals for the
+    whole conversation on a resumed session."""
+    if is_lead and sid == ph.lead_session:
+        return ph.lead_cost_total
+    return sum(s.cost for s in ph.sessions if s.key == key and s.session_id == sid)
 
 
 def _record_session(
@@ -763,6 +917,12 @@ def _save_report(  # noqa: PLR0913 -- the fields of one log entry
         )
         ph.done_steps.append(key)
     run.save()
+
+
+def _write_inputs(run: Run, ph: S.Phase, key: str, inputs: str) -> Path:
+    path = run.repo.phase_dir(ph.dirname) / "inputs" / f"{_safe(key)}.md"
+    store.write_text(path, inputs)
+    return path
 
 
 def _report_path(run: Run, ph: S.Phase, key: str) -> Path:
@@ -987,7 +1147,7 @@ def _defer(
     rnd: int,
 ) -> None:
     """Move deferred findings to the backlog (lows in a `ship`, triage's defer)."""
-    key = f"defer#{rnd}"
+    key = f"defer#{ph.attempt}.{rnd}"
     if key in ph.done_steps:
         return
     items: list[tuple[str, str]] = []
@@ -996,16 +1156,22 @@ def _defer(
             (" = ".join(d["ids"]), f"{d['title']} ({d['reason']})")
             for d in tri.get("defer") or []
         ]
-    else:
+    else:  # everything shipped: what was found is worth keeping
         items = [
             (f["id"], f"{f['title']} [{f['severity']}]")
             for f in render.findings_of(reports)
         ]
-        for rep in reports.values():
-            items += [
-                (f["id"], f"{f['title']} [preexisting]")
-                for f in rep.get("preexisting") or []
-            ]
+    promoted = {i for it in (tri or {}).get("also_fix") or [] for i in it["ids"]}
+    for rep in reports.values():
+        items += [
+            (f["id"], f"{f['title']} [preexisting]")
+            for f in rep.get("preexisting") or []
+            if f["id"] not in promoted
+        ]
+    items = [(ids, text) for ids, text in items if ids not in ph.deferred]
+    ph.deferred += [
+        ids for ids, _ in items
+    ]  # triage re-defers the same item each round
     if text := render.backlog_entry(f"{ph.n} ({ph.title or ph.slug})", items):
         store.append_text(run.repo.orch / "backlog.md", text)
     ph.done_steps.append(key)

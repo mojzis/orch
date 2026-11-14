@@ -15,8 +15,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_fix_rounds": 2,
     "remote": "origin",
     "push": True,
-    "test_globs": ["tests/**", "test/**", "**/test_*.py", "**/*_test.py"],
-    "protected": ["QA.md"],
+    "test_globs": [
+        "tests/**",
+        "test/**",
+        "test_*.py",
+        "*_test.py",
+        "**/test_*.py",
+        "**/*_test.py",
+    ],
+    # files a session must not change: oracles, and orch's own config and briefs
+    "protected": [
+        "QA.md",
+        ".orch/config.toml",
+        ".orch/skills/*",
+        ".orch/scenarios/*",
+        ".orch/phases/*/brief.md",
+        ".orch/phases/*/fix-brief-*.md",
+    ],
 }
 
 

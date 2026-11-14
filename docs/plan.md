@@ -53,7 +53,7 @@ verification by a subagent (fresh eyes, given only the acceptance list) → fix 
 | 3 | Review ‖ QA + verify | fake: both ship; fix then ship; rounds exhausted; malformed output → failed after one retry; two worktrees run at once; `log.md` | done (fake) |
 | 4 | Lead session | fake: deviation → exactly one routed check; duplicates merge; do-NOT-fix stays unfixed; learnings + handoff written | done (fake); live comparison with happytube pending |
 | 5 | `orch plan` + briefs | fake: uncovered requirement; already-passing QA check; brief naming missing file; paid-API phase w/o real-data; planner change needs reason; design question → `needs-user` | done (fake); live outline pending |
-| 6 | Stops, probe, report | SIGINT → paused + resume; usage limit → exit 75 + `--wait`; credentials → `needs-user`; probe step; run report | todo |
+| 6 | Stops, probe, report | SIGINT → paused + resume; usage limit → exit 75 + `--wait`; credentials → `needs-user`; probe step; run report | done (fake) |
 
 Expectation: phases 1–4 this session; 5–6 may spill to the next. See
 [next-session.md](next-session.md) if it exists.

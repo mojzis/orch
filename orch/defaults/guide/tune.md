@@ -38,4 +38,19 @@ review_combined, record last, steps in canonical order.
 - `ORCH_CLAUDE_BIN`: claude executable (default `claude`)
 - `ORCH_CONFIG_HOME`: user layer directory
 
+
+
+## .orch/config.toml (repo keys)
+
+- `gate_cmd`: must pass after every code change; empty = diff checks only
+- `setup_cmd`: run in each fresh review/QA worktree
+- `full_qa_cmd`: the slowest QA tier, run once after the last phase
+- `max_fix_rounds` (2), `remote` ("origin"), `push` (true)
+- `test_globs`, `protected`: what the gate treats as tests and as files a session
+  must not change (QA.md, orch's config, briefs and templates)
+
+## Exit codes of `orch run`
+
+0 done, 2 usage/config error, 3 stopped (needs-user, blocked, needs-replan,
+failed), 75 usage limit, 130 interrupted.
 next: `orch config`

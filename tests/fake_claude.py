@@ -126,6 +126,19 @@ def main() -> int:
     }
     if "structured" in resp:
         out["structured_output"] = resp["structured"]
+    known = {
+        "structured",
+        "cost",
+        "is_error",
+        "result",
+        "subtype",
+        "exit",
+        "stdout",
+        "stderr",
+        "actions",
+        "sleep",
+    }
+    out |= {k: v for k, v in resp.items() if k not in known}  # e.g. api_error_status
     sys.stdout.write(json.dumps(out))
     sys.stderr.write(resp.get("stderr", ""))
     return int(resp.get("exit", 0))

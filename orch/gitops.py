@@ -84,9 +84,14 @@ def remove_worktree(cwd: Path, path: Path) -> None:
     git(cwd, "worktree", "prune", check=False)
 
 
+# the gate judges the project's code, not orch's own records
+NOT_ORCH = ("--", ".", ":(exclude).orch")
+
+
 def name_status(cwd: Path, base: str, ref: str = "HEAD") -> list[tuple[str, str]]:
-    """(status letter, path) for every file changed between base and ref."""
-    out = git(cwd, "diff", "--name-status", "--no-renames", f"{base}..{ref}")
+    """(status letter, path) for every file outside .orch changed between base
+    and ref."""
+    out = git(cwd, "diff", "--name-status", "--no-renames", f"{base}..{ref}", *NOT_ORCH)
     rows = []
     for line in out.splitlines():
         status, _, path = line.partition("\t")
@@ -96,7 +101,7 @@ def name_status(cwd: Path, base: str, ref: str = "HEAD") -> list[tuple[str, str]
 
 def added_lines(cwd: Path, base: str, ref: str = "HEAD") -> list[tuple[str, str]]:
     """(path, line) for every line added between base and ref."""
-    out = git(cwd, "diff", "--unified=0", "--no-renames", f"{base}..{ref}")
+    out = git(cwd, "diff", "--unified=0", "--no-renames", f"{base}..{ref}", *NOT_ORCH)
     rows: list[tuple[str, str]] = []
     path = ""
     for line in out.splitlines():
@@ -108,7 +113,7 @@ def added_lines(cwd: Path, base: str, ref: str = "HEAD") -> list[tuple[str, str]
 
 
 def removed_lines(cwd: Path, base: str, ref: str = "HEAD") -> list[tuple[str, str]]:
-    out = git(cwd, "diff", "--unified=0", "--no-renames", f"{base}..{ref}")
+    out = git(cwd, "diff", "--unified=0", "--no-renames", f"{base}..{ref}", *NOT_ORCH)
     rows: list[tuple[str, str]] = []
     path = ""
     for line in out.splitlines():
@@ -122,3 +127,18 @@ def removed_lines(cwd: Path, base: str, ref: str = "HEAD") -> list[tuple[str, st
 def log_oneline(cwd: Path, base: str, ref: str = "HEAD") -> list[str]:
     out = git(cwd, "log", "--oneline", "--no-decorate", f"{base}..{ref}")
     return [ln for ln in out.splitlines() if ln]
+
+
+ORCH_COMMIT_PREFIX = "orch: "
+
+
+def files_in_session_commits(cwd: Path, base: str, ref: str = "HEAD") -> set[str]:
+    """Files touched by commits between base and ref that orch did not make."""
+    out = git(cwd, "log", "--format=%x00%s", "--name-only", f"{base}..{ref}")
+    files: set[str] = set()
+    for chunk in out.split("\x00")[1:]:
+        lines = chunk.splitlines()
+        if not lines or lines[0].startswith(ORCH_COMMIT_PREFIX):
+            continue
+        files |= {ln for ln in lines[1:] if ln.strip()}
+    return files

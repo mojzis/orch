@@ -6,10 +6,13 @@ Claude Code 2.1.325.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import signal
 import subprocess
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -102,19 +105,44 @@ def child_env() -> dict[str, str]:
     return env
 
 
+_CHILDREN: set[subprocess.Popen[str]] = set()
+_CHILDREN_LOCK = threading.Lock()
+
+
 def _subprocess_runner(
     argv: list[str], cwd: Path, env: dict[str, str]
 ) -> tuple[int, str, str]:
-    proc = subprocess.run(  # noqa: S603 -- argv is built by build_argv
+    """Each session runs in its own process group, so a Ctrl+C reaches orch only;
+    orch then forwards exactly one SIGINT (see `interrupt_children`) and the
+    session records its turn before it exits."""
+    proc = subprocess.Popen(  # noqa: S603 -- argv is built by build_argv
         argv,
         cwd=cwd,
         env=env,
         stdin=subprocess.DEVNULL,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
+        start_new_session=True,
     )
-    return proc.returncode, proc.stdout, proc.stderr
+    with _CHILDREN_LOCK:
+        _CHILDREN.add(proc)
+    try:
+        out, err = proc.communicate()
+    finally:
+        with _CHILDREN_LOCK:
+            _CHILDREN.discard(proc)
+    return proc.returncode, out, err
+
+
+def interrupt_children() -> int:
+    """Forward SIGINT to every running session. Returns how many got it."""
+    with _CHILDREN_LOCK:
+        live = [p for p in _CHILDREN if p.poll() is None]
+    for p in live:
+        with contextlib.suppress(ProcessLookupError):
+            p.send_signal(signal.SIGINT)
+    return len(live)
 
 
 _run: Runner = _subprocess_runner

@@ -10,8 +10,9 @@ def check_add_checks(dev_reports: list[dict[str, Any]], rep: dict[str, Any]) -> 
     """Exactly one routed check per deviation and per unresolved issue."""
     wanted: list[str] = []
     for d in dev_reports:
-        wanted += [x for x in d.get("deviations") or [] if x.strip()]
-        wanted += [x for x in d.get("unresolved_issues") or [] if x.strip()]
+        for x in [*(d.get("deviations") or []), *(d.get("unresolved_issues") or [])]:
+            if x.strip() and x not in wanted:  # the same item twice needs one check
+                wanted.append(x)
     checks = rep.get("checks") or []
     sources = [c.get("source", "") for c in checks]
     problems = []

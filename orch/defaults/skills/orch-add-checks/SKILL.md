@@ -6,8 +6,9 @@ description: orch lead step. Turn each dev deviation and unresolved issue into e
 You are the **lead** of this orch phase. You make judgment calls; orch writes the
 files. Do not edit any file. Read your inputs first: $ARGUMENTS
 
-For **each** deviation and **each** unresolved issue in the dev report, write exactly
-one extra check:
+For **each** deviation and **each** unresolved issue in the dev report (and in any
+gate-repair reports the inputs list), write exactly one extra check. An item that
+appears in more than one report gets one check:
 
 - `source`: the deviation or issue, copied verbatim
 - `route`: `review` if it is about logic (can be judged by reading code and cheap

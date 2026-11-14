@@ -7,6 +7,8 @@ state.json."""
 from __future__ import annotations
 
 import re
+import time
+from datetime import UTC, datetime
 from typing import Any
 
 from orch import claude, gitops, render, store
@@ -16,9 +18,11 @@ from orch.errors import ConfigError
 from orch.loop import (
     Run,
     StopRun,
+    archive_run,
     discover_phases,
     ensure_gitignore,
     execute,
+    load_state,
     new_run_id,
     read_pitch,
     start_or_resume,
@@ -115,7 +119,7 @@ def plan(
                 "the working tree has uncommitted changes",
                 hint="commit or stash them; orch starts a run branch from HEAD",
             )
-        run_id = new_run_id()
+        run_id = new_run_id(repo.root)
         st = S.RunState(run_id=run_id, branch=f"orch/{run_id}")
     else:
         st = S.load(repo.state_path)
@@ -388,22 +392,47 @@ def render_plan(st: S.RunState, req_ids: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run(
+WAIT_FALLBACK_S = 30 * 60
+WAIT_MARGIN_S = 60
+_sleep = time.sleep
+
+
+def run(  # noqa: PLR0913 -- the options of `orch run`
     repo: Repo,
     *,
     scenario: str | None = None,
     sets: list[str] | None = None,
     auto_decide: bool = False,
     pause: bool = False,
+    wait: bool = False,
 ) -> S.RunState:
     """`orch run`: plan first when there is a pitch but no run and no hand-written
-    briefs, then run (or resume) every phase."""
+    briefs, then run (or resume) every phase. With `wait`, a usage limit sleeps
+    until the reset time and carries on."""
+    if repo.state_path.is_file() and load_state(repo).status == S.DONE:
+        archive_run(repo)
     fresh = not repo.state_path.is_file()
     has_briefs = bool(discover_phases(repo, "full"))
     if fresh and not has_briefs and (repo.root / "docs" / "pitch.md").is_file():
         st = plan(repo, scenario=scenario, sets=sets)
         if st.status != S.RUNNING or pause:
             return st
-    r = start_or_resume(repo, scenario=scenario, sets=sets)
-    r.st.auto_decide = r.st.auto_decide or auto_decide
-    return execute(r)
+    while True:
+        r = start_or_resume(repo, scenario=scenario, sets=sets)
+        r.st.auto_decide = r.st.auto_decide or auto_decide
+        st = execute(r)
+        if not (wait and st.status == S.PAUSED and st.stop_kind == "usage_limit"):
+            return st
+        _sleep(seconds_until(st.reset_at) + WAIT_MARGIN_S)
+
+
+def seconds_until(iso: str | None) -> float:
+    if not iso:
+        return WAIT_FALLBACK_S
+    try:
+        when = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return WAIT_FALLBACK_S
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max((when - datetime.now(UTC)).total_seconds(), 0.0)
