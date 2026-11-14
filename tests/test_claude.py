@@ -120,7 +120,7 @@ def test_cost_delta_on_resume_subtracts_previous_total() -> None:
 def test_usage_limit_with_epoch_reset() -> None:
     out = _ok(
         is_error=True,
-        subtype="error_during_execution",
+        terminal_reason="api_error",
         result="Claude AI usage limit reached|1763150400",
     )
     r = parse_result(1, out, "", session_id="s1", want_structured=True)
@@ -137,16 +137,66 @@ def test_usage_limit_with_iso_reset() -> None:
     assert r.reset_at == "2026-11-14T20:00:00Z"
 
 
-def test_auth_error() -> None:
-    r = parse_result(
-        1,
-        _ok(is_error=True, result="Invalid API key · Please run /login"),
-        "",
-        session_id="s1",
-        want_structured=True,
+def _kind(code: int = 1, **raw: object) -> str | None:
+    out = _ok(**raw)
+    return parse_result(code, out, "", session_id="s", want_structured=True).error_kind
+
+
+def test_not_logged_in_is_auth() -> None:  # shape of real claude 2.1.325 output
+    kind = _kind(
+        is_error=True,
+        result="Not logged in · Please run /login",
+        terminal_reason="api_error",
+        api_error_status=None,
     )
-    assert r.error_kind == "auth"
-    assert r.reset_at is None
+    assert kind == "auth"
+
+
+def test_bad_key_is_auth_from_structured_fields() -> None:
+    kind = _kind(
+        is_error=True,
+        result="x",
+        api_error_status=401,
+        api_error_type="authentication_error",
+        terminal_reason="api_error",
+    )
+    assert kind == "auth"
+
+
+def test_model_text_mentioning_login_is_not_auth() -> None:
+    kind = _kind(
+        is_error=True,
+        subtype="error_max_turns",
+        num_turns=40,
+        result="Implemented the /login route; 401 tests pass",
+    )
+    assert kind == "other"
+
+
+def test_budget_exhausted_is_its_own_kind() -> None:  # real shape: exit 0, result null
+    out = _ok(
+        is_error=True,
+        subtype="error_max_budget_usd",
+        result=None,
+        terminal_reason="budget_exhausted",
+        errors=["Reached maximum budget ($1)"],
+    )
+    r = parse_result(0, out, "", session_id="s", want_structured=True)
+    assert (r.error_kind, r.error) == (
+        "budget",
+        "error_max_budget_usd | budget_exhausted | Reached maximum budget ($1)",
+    )
+
+
+def test_api_429_is_retryable_not_a_usage_limit() -> None:
+    kind = _kind(
+        is_error=True,
+        result="rate limited",
+        api_error_status=429,
+        api_error_type="rate_limit_error",
+        terminal_reason="api_error",
+    )
+    assert kind == "other"
 
 
 def test_other_error_and_non_json_output() -> None:

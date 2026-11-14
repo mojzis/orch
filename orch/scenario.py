@@ -90,17 +90,14 @@ def validate(s: Scenario) -> None:
             "triage" not in s.steps or "fix" in s.steps,
             "triage needs a fix step",
         ),
+        (
+            "verify" not in s.steps or "fix" in s.steps,
+            "verify needs a fix step",
+        ),
     ]
     for ok, rule in rules:
         if not ok:
             raise ConfigError(f"scenario {s.name!r} breaks a rule: {rule}")
-    for _layer, src, settings in s.role_settings:
-        bad = [r for r in settings if r not in ROLES]
-        if bad:
-            raise ConfigError(
-                f"{src}: unknown role(s) {', '.join(bad)}",
-                hint=f"roles are: {', '.join(ROLES)}",
-            )
 
 
 def _next(s: Scenario, step: str) -> str | None:

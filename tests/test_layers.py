@@ -137,3 +137,56 @@ def test_eject_copies_default_into_repo(layers: L.Layers) -> None:
     assert L.find_template(layers, "orch-qa")[0] == "repo"
     with pytest.raises(ConfigError, match="already exists"):
         L.eject(layers, "orch-qa")
+
+
+@pytest.mark.parametrize(
+    ("toml", "match"),
+    [
+        ('[role.reveiw]\nmodel = "haiku"\n', "unknown role 'reveiw'"),
+        ("[role.outline]\nbogus = 1\n", "unknown key outline.bogus"),
+        ('[role.dev]\neffort = "bogus"\n', "dev.effort"),
+        ('[role.dev]\nmax_budget_usd = "lots"\n', "must be a number"),
+    ],
+)
+def test_config_typos_are_refused(layers: L.Layers, toml: str, match: str) -> None:
+    (layers.repo / "config.toml").write_text(toml)
+    with pytest.raises(ConfigError, match=match):
+        L.describe(layers, "full")
+
+
+@pytest.mark.parametrize(
+    "item", ["dev.max_budget_usd=abc", "dev.effort=bogus", "dev.colour=red"]
+)
+def test_bad_sets_are_config_errors(item: str) -> None:
+    with pytest.raises(ConfigError):
+        L.parse_sets([item])
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'steps = ["dev", "gate", "review_qa", "verify", "record"]',  # verify, no fix
+        'steps = "dev"',
+        'extends = "full"\nadd_steps = { verify = "probe" }',
+    ],
+)
+def test_malformed_scenarios_are_refused(layers: L.Layers, body: str) -> None:
+    (layers.repo / "scenarios").mkdir()
+    (layers.repo / "scenarios" / "bad.toml").write_text(body + "\n")
+    with pytest.raises(ConfigError):
+        L.load_scenario(layers, "bad")
+
+
+def test_extra_adds_up_across_layers(layers: L.Layers) -> None:
+    layers.user.mkdir(parents=True)
+    (layers.user / "config.toml").write_text('[role.qa]\nextra = "USER EXTRA"\n')
+    r = L.resolve_role(layers, L.load_scenario(layers, "ui"), "qa")
+    assert ("browser" in r.config.extra, "USER EXTRA" in r.config.extra) == (True, True)
+
+
+def test_non_orch_named_template_is_materialized(
+    layers: L.Layers, tmp_path: Path
+) -> None:
+    _skill(layers.repo, "my-qa", "MINE")
+    dest = L.materialize_skills(layers, tmp_path / "cache")
+    assert (dest / ".claude" / "skills" / "my-qa" / "SKILL.md").is_file()

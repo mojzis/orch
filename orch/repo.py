@@ -59,3 +59,33 @@ def find_repo(start: Path | None = None) -> Repo:
         f"{here} is not inside a git repository",
         hint="run orch from the project repo",
     )
+
+
+CONFIG_TEMPLATE = """\
+# orch repo config. Layers and roles: `orch guide tune`.
+
+# The gate: one command that must pass after every code change (tests + typecheck).
+gate_cmd = ""
+# Run once in each fresh review/QA worktree, e.g. "uv sync".
+setup_cmd = ""
+max_fix_rounds = 2
+remote = "origin"
+push = true
+
+# Per-role overrides, e.g.:
+# [role.dev]
+# model = "sonnet"
+# effort = "high"
+"""
+
+
+def init_repo(repo: Repo) -> Path:
+    path = repo.orch / "config.toml"
+    if path.exists():
+        raise ConfigError(f"{path} already exists", hint="edit it in place")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(CONFIG_TEMPLATE, encoding="utf-8")
+    gi = repo.orch / ".gitignore"
+    if not gi.exists():
+        gi.write_text(".cache/\n", encoding="utf-8")
+    return path

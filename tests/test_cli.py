@@ -9,6 +9,9 @@ from typer.testing import CliRunner
 
 from orch.cli import app
 
+from .conftest import git
+from .helpers import LEARN, checker, dev, make_project
+
 runner = CliRunner()
 
 
@@ -77,3 +80,22 @@ COMMANDS = {
 def test_every_command_in_guide_pages_exists(page: str) -> None:
     mentioned = set(re.findall(r"`orch ([a-z-]+)", (PAGES / page).read_text()))
     assert mentioned <= COMMANDS
+
+
+def test_run_exit_codes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude
+) -> None:
+    repo = make_project(tmp_path, phases=1)
+    monkeypatch.chdir(repo)
+    fake_claude.on("orch-dev", dev("w.txt", {"write": "BROKEN", "content": "1"}))
+    fake_claude.on("orch-fix", dev("f.txt"))
+    res = runner.invoke(app, ["run", "-s", "small"])
+    assert (res.exit_code, "blocked" in res.output) == (3, True)
+    (repo / "BROKEN").unlink()
+    git(repo, "commit", "-qam", "manual fix")
+    fake_claude.on("orch-combined", {"structured": checker()})
+    fake_claude.on("orch-learnings", {"structured": LEARN})
+    res = runner.invoke(app, ["run"])
+    assert res.exit_code == 0, res.output
+    res = runner.invoke(app, ["status"])
+    assert "done" in res.output

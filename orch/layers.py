@@ -162,11 +162,13 @@ def load_scenario(layers: Layers, name: str) -> Scenario:
     settings: list[tuple[str, str, dict[str, Any]]] = []
     for layer, path, data in chain:
         if "steps" in data:
-            steps = tuple(data["steps"])
+            steps = tuple(_str_list(data["steps"], f"{path}: steps"))
         for step, extra_steps in (data.get("add_steps") or {}).items():
-            steps = _insert_after(steps, step, tuple(extra_steps))
+            new = _str_list(extra_steps, f"{path}: add_steps.{step}")
+            steps = _insert_after(steps, step, tuple(new))
         description = data.get("description", description)
         if roles := data.get("role"):
+            check_roles(roles, f"{layer}:{path.name}")
             settings.append((layer, f"{layer}:{path.name}", roles))
     sc = Scenario(
         name=name,
@@ -177,6 +179,12 @@ def load_scenario(layers: Layers, name: str) -> Scenario:
     )
     validate(sc)
     return sc
+
+
+def _str_list(v: Any, what: str) -> list[str]:
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+        raise ConfigError(f"{what} must be a list of step names")
+    return v
 
 
 def _insert_after(
@@ -194,8 +202,35 @@ def load_config(layers: Layers) -> list[tuple[str, str, dict[str, Any]]]:
     for layer, d in layers.dirs()[1:]:
         p = d / "config.toml"
         if p.is_file():
-            out.append((layer, f"{layer}:config.toml", _load_toml(p)))
+            data = _load_toml(p)
+            check_roles(data.get("role") or {}, f"{layer}:config.toml")
+            out.append((layer, f"{layer}:config.toml", data))
     return out
+
+
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def check_roles(roles: Any, src: str) -> None:
+    """Every role name and key known, values of the right type."""
+    if not isinstance(roles, dict):
+        raise ConfigError(f"{src}: [role] must be a table")
+    for role, vals in roles.items():
+        if role not in ROLES:
+            raise ConfigError(f"{src}: unknown role {role!r}", hint=f"roles: {ROLES}")
+        if not isinstance(vals, dict):
+            raise ConfigError(f"{src}: role.{role} must be a table")
+        for k, v in vals.items():
+            if k not in KEYS:
+                raise ConfigError(
+                    f"{src}: unknown key {role}.{k}", hint=f"keys: {KEYS}"
+                )
+            if k == "effort" and v not in EFFORTS:
+                raise ConfigError(
+                    f"{src}: {role}.effort = {v!r}", hint=f"one of {', '.join(EFFORTS)}"
+                )
+            if k == "max_budget_usd" and not isinstance(v, int | float):
+                raise ConfigError(f"{src}: {role}.max_budget_usd must be a number")
 
 
 def parse_sets(sets: list[str] | tuple[str, ...]) -> dict[str, dict[str, Any]]:
@@ -211,10 +246,18 @@ def parse_sets(sets: list[str] | tuple[str, ...]) -> dict[str, dict[str, Any]]:
             )
         v: Any = value
         if attr == "max_budget_usd":
-            v = float(value)
+            try:
+                v = float(value)
+            except ValueError:
+                raise ConfigError(
+                    f"bad --set {item!r}: not a number",
+                    hint="e.g. dev.max_budget_usd=20",
+                ) from None
         elif attr == "tools":
             v = None if value == "all" else tuple(t for t in value.split(",") if t)
         out.setdefault(role, {})[attr] = v
+    for role, vals in out.items():
+        check_roles({role: vals}, "--set")
     return out
 
 
@@ -247,15 +290,18 @@ def resolve_role(
     )  # stable: within a layer, a scenario beats config.toml
     for _rank, src, vals in stack:
         for k, v in vals.items():
-            if k not in KEYS:
-                raise ConfigError(
-                    f"{src}: unknown key {role}.{k}", hint=f"keys: {KEYS}"
-                )
+            if k == "extra" and values.get("extra"):
+                values[k] = f"{values['extra']}\n{v}"  # extra adds up across layers
+                sources[k] = f"{sources[k]} + {src}"
+                continue
             values[k] = _norm_tools(v) if k == "tools" else v
             sources[k] = src
     template = values["template"]
     tlayer, tpath = find_template(layers, template)
-    sources["template"] = f"{sources['template']} ({tlayer} skill)"
+    name_from = sources["template"]
+    sources["template"] = f"{tlayer} skill" + (
+        f" (name set by {name_from})" if name_from != "default" else ""
+    )
     cfg = StepConfig(
         step=role,
         template=template,
@@ -290,7 +336,7 @@ def find_template(layers: Layers, name: str) -> tuple[str, Path]:
 def list_templates(layers: Layers) -> dict[str, str]:
     found: dict[str, str] = {}
     for layer, d in layers.dirs():
-        for p in sorted((d / "skills").glob("orch-*/SKILL.md")):
+        for p in sorted((d / "skills").glob("*/SKILL.md")):
             found[p.parent.name] = layer
     return found
 
@@ -371,7 +417,7 @@ def roles_for(sc: Scenario) -> list[str]:
         "probe": ["probe"],
         "record": ["learnings"],
     }
-    out: list[str] = []
+    out: list[str] = ["outline", "outline_review"]  # `orch plan`, once per run
     for step in sc.steps:
         out += by_step.get(step, [])
     return out

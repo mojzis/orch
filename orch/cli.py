@@ -12,8 +12,10 @@ from rich.table import Table
 from typer_agentic import agent_errors
 
 from orch import layers as L
+from orch import loop
+from orch import state as S
 from orch.errors import OrchError
-from orch.repo import find_repo
+from orch.repo import find_repo, init_repo
 from orch.ui import TABLE_BOX, console, err
 
 app = typer.Typer(
@@ -43,6 +45,74 @@ def _fail(e: OrchError) -> typer.Exit:
 
 def _task(sets: list[str] | None) -> L.TaskLayer:
     return L.TaskLayer(((("cli:--set"), L.parse_sets(sets or [])),))
+
+
+@app.command()
+def init() -> None:
+    """Create .orch/config.toml with the keys orch reads, commented."""
+    try:
+        path = init_repo(find_repo())
+    except OrchError as e:
+        raise _fail(e) from None
+    console.print(f"wrote {path}; set gate_cmd, then commit it", markup=False)
+
+
+@app.command()
+def run(
+    scenario: ScenarioOpt = None,
+    sets: SetOpt = None,
+) -> None:
+    """Run (or resume) the phase loop on the run branch. Exit 0 when every phase
+    is done, 3 when stopped (re-run to resume), 75 on a usage limit."""
+    try:
+        r = loop.start_or_resume(find_repo(), scenario=scenario, sets=sets)
+        st = loop.execute(r)
+    except OrchError as e:
+        raise _fail(e) from None
+    _print_status(st)
+    if st.status == S.DONE:
+        return
+    if st.status == S.PAUSED and st.reset_at:
+        raise typer.Exit(loop.EXIT_PAUSED)
+    raise typer.Exit(3)
+
+
+@app.command()
+def status() -> None:
+    """Show the run's state (from .orch/state.json)."""
+    try:
+        st = loop.load_state(find_repo())
+    except OrchError as e:
+        raise _fail(e) from None
+    _print_status(st)
+
+
+def _print_status(st: S.RunState) -> None:
+    reason = f" ({st.stop_reason})" if st.stop_reason else ""
+    console.print(f"run {st.run_id} on {st.branch}: {st.status}{reason}", markup=False)
+    if st.reset_at:
+        console.print(f"usage limit resets at {st.reset_at}", markup=False)
+    t = Table(
+        "#",
+        "phase",
+        "scenario",
+        "status",
+        "last step",
+        "fix rounds",
+        "cost",
+        box=TABLE_BOX,
+    )
+    for p in st.phases:
+        t.add_row(
+            str(p.n),
+            p.title or p.slug,
+            p.scenario,
+            p.status,
+            p.done_steps[-1] if p.done_steps else "",
+            str(p.fix_round),
+            f"${p.cost():.2f}",
+        )
+    console.print(t)
 
 
 @app.command("config")

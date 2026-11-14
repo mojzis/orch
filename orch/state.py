@@ -50,6 +50,7 @@ class Phase:
     lead_session: str | None = None
     lead_cost_total: float = 0.0
     sessions: list[SessionRecord] = field(default_factory=list)
+    base: str | None = None  # HEAD when the phase started
     commit: str | None = None
     note: str = ""
     covers: list[str] = field(default_factory=list)

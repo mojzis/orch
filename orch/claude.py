@@ -38,7 +38,7 @@ class StepConfig:
 class SessionResult:
     session_id: str
     ok: bool
-    error_kind: str | None  # usage_limit | auth | bad_output | other
+    error_kind: str | None  # usage_limit | auth | budget | bad_output | other
     error: str
     structured: dict[str, Any] | None
     cost_total: float
@@ -121,23 +121,50 @@ _run: Runner = _subprocess_runner
 
 _USAGE_RE = re.compile(
     r"usage limit|limit reached|out of (extra )?usage|hit your limit|"
-    r"weekly limit|5-hour limit|rate_limit",
+    r"weekly limit|5-hour limit",
     re.IGNORECASE,
 )
 _AUTH_RE = re.compile(
-    r"invalid api key|authenticat|not logged in|/login|oauth token|"
-    r"credential|unauthori[sz]ed|\b401\b",
+    r"invalid api key|authentication|not logged in|please run /login|oauth token",
     re.IGNORECASE,
 )
 _EPOCH_RE = re.compile(r"\|(\d{10})\b")
 _ISO_RE = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:\d{2})"
 )
+HTTP_UNAUTHORIZED, HTTP_FORBIDDEN, HTTP_TOO_MANY = 401, 403, 429
 
 
-def classify_error(text: str) -> str:
+def error_text(raw: dict[str, Any], stderr: str) -> str:
+    """Text worth matching for an error kind. The model's own `result` counts only
+    when the API failed before a model turn: a dev session that ran out of turns
+    may well have written "fixed the /login route"."""
+    parts = [str(e) for e in raw.get("errors") or []] + [stderr]
+    no_model_turn = raw.get("terminal_reason") == "api_error" or (
+        raw.get("subtype") in (None, "success") and int(raw.get("num_turns") or 0) <= 1
+    )
+    if no_model_turn or not raw:
+        parts.append(str(raw.get("result") or ""))
+    return "\n".join(p for p in parts if p)
+
+
+def classify_error(raw: dict[str, Any], text: str) -> str:
+    """usage_limit | auth | budget | other. Structured fields first."""
+    status = raw.get("api_error_status")
+    etype = str(raw.get("api_error_type") or "")
+    if raw.get("subtype") == "error_max_budget_usd" or (
+        raw.get("terminal_reason") == "budget_exhausted"
+    ):
+        return "budget"
+    if status in (HTTP_UNAUTHORIZED, HTTP_FORBIDDEN) or etype in (
+        "authentication_error",
+        "permission_error",
+    ):
+        return "auth"
     if _USAGE_RE.search(text):
         return "usage_limit"
+    if status == HTTP_TOO_MANY or "rate_limit" in etype or "overloaded" in etype:
+        return "other"  # a temporary throttle: retry, do not pause the run
     if _AUTH_RE.search(text):
         return "auth"
     return "other"
@@ -177,7 +204,7 @@ def parse_result(  # noqa: PLR0913 -- the inputs of one finished session
     cost_total = float(raw.get("total_cost_usd") or 0.0)
     usage = raw.get("usage") or {}
     sid = str(raw.get("session_id") or session_id)
-    message = str(raw.get("result") or "") + "\n" + stderr
+    text = error_text(raw, stderr) if raw else (stderr + "\n" + stdout).strip()
 
     def fail(kind: str, error: str) -> SessionResult:
         return SessionResult(
@@ -189,14 +216,15 @@ def parse_result(  # noqa: PLR0913 -- the inputs of one finished session
             cost_total=cost_total,
             cost_delta=max(cost_total - prev_cost, 0.0),
             usage=usage,
-            reset_at=parse_reset_at(message) if kind == "usage_limit" else None,
+            reset_at=parse_reset_at(text) if kind == "usage_limit" else None,
             raw=raw,
         )
 
     if not raw:
-        text = (stderr + "\n" + stdout).strip() or f"exit code {returncode}"
-        kind = classify_error(text)
-        return fail("bad_output" if kind == "other" and returncode == 0 else kind, text)
+        kind = classify_error({}, text)
+        if kind == "other" and returncode == 0:
+            kind = "bad_output"
+        return fail(kind, text or f"exit code {returncode}")
     if (
         returncode != 0
         or raw.get("is_error")
@@ -206,7 +234,18 @@ def parse_result(  # noqa: PLR0913 -- the inputs of one finished session
             "success",
         )
     ):
-        return fail(classify_error(message), message or f"exit code {returncode}")
+        detail = " | ".join(
+            x
+            for x in (
+                str(raw.get("subtype") or ""),
+                str(raw.get("terminal_reason") or ""),
+                "; ".join(str(e) for e in raw.get("errors") or []),
+                str(raw.get("result") or ""),
+                stderr.strip(),
+            )
+            if x
+        )
+        return fail(classify_error(raw, text), detail or f"exit code {returncode}")
     structured = raw.get("structured_output")
     if want_structured and not isinstance(structured, dict):
         return fail("bad_output", "session ended without structured_output")
