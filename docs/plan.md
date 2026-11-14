@@ -50,9 +50,9 @@ verification by a subagent (fresh eyes, given only the acceptance list) → fix 
 |---|---|---|---|
 | 1 | Session wrapper, layers, state | unit tests: argv, parsing, missing structured output, each error kind, cost delta on resume, repo template beats user one; `orch config` shows provenance; live smoke test (marked `integration`) checks CLAUDE.md loaded and the resolved skill ran | done |
 | 2 | Minimal loop | fake claude: 3 phases finish; gate failing past cap → `blocked`; resume from fresh clone of pushed branch; diff checks | done; live 2-phase toy run ok ($1.88) |
-| 3 | Review ‖ QA + verify | fake: both ship; fix then ship; rounds exhausted; malformed output → failed after one retry; two worktrees run at once; `log.md` | done (fake) |
+| 3 | Review ‖ QA + verify | fake: both ship; fix then ship; rounds exhausted; malformed output → failed after one retry; two worktrees run at once; `log.md` | done; live full-scenario run ok ($2.77) |
 | 4 | Lead session | fake: deviation → exactly one routed check; duplicates merge; do-NOT-fix stays unfixed; learnings + handoff written | done (fake); live comparison with happytube pending |
-| 5 | `orch plan` + briefs | fake: uncovered requirement; already-passing QA check; brief naming missing file; paid-API phase w/o real-data; planner change needs reason; design question → `needs-user` | done (fake); live outline pending |
+| 5 | `orch plan` + briefs | fake: uncovered requirement; already-passing QA check; brief naming missing file; paid-API phase w/o real-data; planner change needs reason; design question → `needs-user` | done; live plan→brief→run of a 2-requirement pitch ok ($8.89) |
 | 6 | Stops, probe, report | SIGINT → paused + resume; usage limit → exit 75 + `--wait`; credentials → `needs-user`; probe step; run report | done (fake) |
 
 Expectation: phases 1–4 this session; 5–6 may spill to the next. See
@@ -64,3 +64,9 @@ Expectation: phases 1–4 this session; 5–6 may spill to the next. See
   (`--json-schema`, `--session-id`, `--permission-mode auto`, `--permission-prompts none`,
   `--tools`, `--effort`, `--max-budget-usd`, `--fallback-model`, `--add-dir`). JSON result
   carries `session_id`, `total_cost_usd`, `usage`, `structured_output`, `is_error`, `subtype`.
+- 2026-11-14 (later): phases 1–6 built, each verified by an independent subagent; their
+  findings fixed (classifier, worktree inputs, gate scanning .orch, resume of
+  code-changing sessions, backlog). Live runs in scratch repos: small scenario 2 phases
+  ($1.88); plan + briefs + 2 phases from a pitch ($8.89); full scenario with review ‖ QA
+  and the lead ($2.77). The live runs found the gate flagging `__pycache__` (fixed with
+  `dirty_ignore`).
