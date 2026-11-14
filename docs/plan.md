@@ -55,7 +55,7 @@ verification by a subagent (fresh eyes, given only the acceptance list) → fix 
 | 5 | `orch plan` + briefs | fake: uncovered requirement; already-passing QA check; brief naming missing file; paid-API phase w/o real-data; planner change needs reason; design question → `needs-user` | done; live plan→brief→run of a 2-requirement pitch ok ($8.89) |
 | 6 | Stops, probe, report | SIGINT → paused + resume; usage limit → exit 75 + `--wait`; credentials → `needs-user`; probe step; run report | done (fake) |
 
-Expectation: phases 1–4 this session; 5–6 may spill to the next. See
+All six phases were built in session 1. Remaining work:
 [next-session.md](next-session.md) if it exists.
 
 ## Session log
@@ -70,3 +70,4 @@ Expectation: phases 1–4 this session; 5–6 may spill to the next. See
   ($1.88); plan + briefs + 2 phases from a pitch ($8.89); full scenario with review ‖ QA
   and the lead ($2.77). The live runs found the gate flagging `__pycache__` (fixed with
   `dirty_ignore`).
+- 2026-11-14 (end): phase 5–6 review findings fixed; live smoke run on the final code ok ($0.93). Handoff: docs/next-session.md.
