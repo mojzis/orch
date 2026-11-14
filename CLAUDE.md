@@ -2,7 +2,7 @@
 
 ## Commands
 
-- `uv run poe check` — run lint (incl. ruff `S` security rules), typecheck, vulns, test-lint, clones, then tests
+- `uv run poe check` — `madoqua check`: every hook check on every file (ruff incl. `S` security rules, ty, biston, zorilla), plus full tests and a non-blocking vuln scan
 - `uv run poe fix` — auto-format and fix lint issues
 - `uv run poe test` — run tests only
 - `uv run poe check-all` — run all checks including dead-code, single-use abstractions (dermestes) and unused-deps
