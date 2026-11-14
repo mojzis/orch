@@ -289,7 +289,7 @@ def test_design_question_pauses_as_needs_user(project: Path, fc: FakeClaude) -> 
 def test_auto_decide_takes_recommended(project: Path, fc: FakeClaude) -> None:
     fc.on("orch-brief", QUESTION, BRIEF)
     st = planning.run(Repo(project), auto_decide=True)
-    answers = (project / ".orch/phases/01-add/answers.md").read_text()
+    answers = (project / ".orch/phases/01-add/inputs/brief-answered.md").read_text()
     assert (st.status, "files (recommended option" in answers) == (S.DONE, True)
     assert any(r.get("kind") == "auto-decide" for r in st.replans)
 

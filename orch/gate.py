@@ -121,6 +121,7 @@ def run_gate(cwd: Path, spec: GateSpec, base: str) -> GateResult:
                 text=True,
                 check=False,
                 timeout=timeout_s,
+                start_new_session=True,  # Ctrl+C pauses orch, not the gate
             )
             code = proc.returncode
             output = (proc.stdout + proc.stderr)[-OUTPUT_TAIL:]

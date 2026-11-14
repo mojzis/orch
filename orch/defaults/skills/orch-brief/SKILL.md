@@ -15,7 +15,7 @@ the outline row for this phase, the earlier phases' handoffs and
 command you name must exist or be marked *(new)*.
 
 If the code turns out different from what the outline assumed and another scenario
-fits better, set `scenario` (one of full, small, ui, real-data) and
+fits better, set `scenario` (a scenario name from the outline inputs) and
 `scenario_reason`; orch records it as a replan. Otherwise leave both empty.
 
 If this phase has design choices the pitch and decisions leave open, return them in

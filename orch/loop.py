@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import yaml
 
@@ -83,6 +83,10 @@ class Run:
         if self.cli_sets:
             entries.append(("cli:--set", self.cli_sets))
         return L.TaskLayer(tuple(entries))
+
+    def scenario_of(self, ph: S.Phase) -> str:
+        """`orch run -s X` applies to this run only; the planner's pick stays."""
+        return self.cli_scenario or ph.scenario
 
     def rel(self, path: Path) -> str:
         return str(path.relative_to(self.root))
@@ -239,10 +243,6 @@ def start_or_resume(
         cli_sets=cli_sets,
         pitch=pitch,
     )
-    if scenario:
-        for ph in st.phases:
-            if ph.status != "done":
-                ph.scenario = scenario
     return run
 
 
@@ -259,19 +259,28 @@ def execute(run: Run) -> S.RunState:
     run.save()
     INTERRUPTED.clear()
     try:
-        with _sigint_forwarding():
+        with sigint_forwarding():
             while (ph := st.current()) is not None:
                 run_phase(run, ph)
+            st.status = S.DONE
             finish(run)
-        st.status = S.DONE
     except StopRun as stop:
         st.status, st.stop_reason, st.reset_at = stop.status, stop.reason, stop.reset_at
         st.stop_kind = stop.kind
-        if (ph := st.current()) is not None and stop.status in (S.BLOCKED, S.FAILED):
+        ph = st.current()
+        if (
+            ph is not None
+            and ph.status == "running"
+            and stop.status
+            in (
+                S.BLOCKED,
+                S.FAILED,
+            )
+        ):
             ph.status = stop.status
     except (OrchError, OSError) as e:
         st.status, st.stop_reason = S.FAILED, f"{type(e).__name__}: {e}"
-        if (ph := st.current()) is not None:
+        if (ph := st.current()) is not None and ph.status == "running":
             ph.status = S.FAILED
     run.save()
     _commit_orch(run, f"orch: run {st.status}")
@@ -281,7 +290,7 @@ def execute(run: Run) -> S.RunState:
 
 
 @contextlib.contextmanager
-def _sigint_forwarding() -> Generator[None]:
+def sigint_forwarding() -> Generator[None]:
     """First Ctrl+C: forward SIGINT to the running sessions so their turn is
     recorded, then stop as `paused`. Second Ctrl+C: the default, exit now."""
     if threading.current_thread() is not threading.main_thread():
@@ -297,6 +306,9 @@ def _sigint_forwarding() -> Generator[None]:
     previous = signal.signal(signal.SIGINT, handler)
     try:
         yield
+    except KeyboardInterrupt:  # second Ctrl+C: leave no session running
+        claude.interrupt_children()
+        raise
     finally:
         signal.signal(signal.SIGINT, previous)
 
@@ -320,11 +332,11 @@ def _reopen_current(st: S.RunState) -> None:
 
 
 def run_phase(run: Run, ph: S.Phase) -> None:
-    sc = L.load_scenario(run.layers, ph.scenario)
+    sc = L.load_scenario(run.layers, run.scenario_of(ph))
     pdir = run.repo.phase_dir(ph.dirname)
-    if ph.status == "todo":
+    if ph.status == "todo" or ph.base is None:
         ph.status = "running"
-        ph.base = gitops.head(run.root)
+        ph.base = ph.base or gitops.head(run.root)
         run.save()
     brief = pdir / "brief.md"
     planned = bool(ph.covers or ph.deliverable)  # from `orch plan`, not hand-written
@@ -332,7 +344,7 @@ def run_phase(run: Run, ph: S.Phase) -> None:
         brief_step(run, ph, sc)
         ph.done_steps.append("brief:ok")
         run.save()
-        sc = L.load_scenario(run.layers, ph.scenario)  # the lead may switch it
+        sc = L.load_scenario(run.layers, run.scenario_of(ph))  # the lead may switch
     if not brief.is_file():
         raise StopRun(S.NEEDS_REPLAN, f"phase {ph.n} has no brief at {run.rel(brief)}")
     _commit_orch(run, f"orch: phase {ph.n} start")
@@ -449,7 +461,9 @@ def gate_loop(run: Run, ph: S.Phase, after: str) -> None:
         if key in ph.done_steps:
             res = store.read_json(_report_path(run, ph, key))
         else:
+            _stop_if_interrupted(f"gate[{after}]")
             g = run_gate(run.root, GateSpec.from_config(run.config), ph.base or "HEAD")
+            _stop_if_interrupted(f"gate[{after}]")  # a gate cut short proves nothing
             res = g.to_dict()
             _save_report(run, ph, key, role="gate", session="-", cost=0.0, report=res)
         if res["ok"]:
@@ -522,6 +536,8 @@ def probe(run: Run, ph: S.Phase) -> None:
     rep = worker(run, ph, "probe", "probe", _base_inputs(run, ph, "probe"))
     problems = " ".join(rep.get("problems") or [])
     if re.search(r"credential|api key|unauthori[sz]ed|forbidden", problems, re.I):
+        ph.done_steps.remove("probe")  # probe again once the user has fixed it
+        run.save()
         raise StopRun(
             S.NEEDS_USER, f"phase {ph.n} probe: credential problem: {problems}"
         )
@@ -531,19 +547,31 @@ MAX_BRIEF_REVISIONS = 2
 _PATH_RE = re.compile(r"`([\w./-]+/[\w.-]+\.\w+)`")
 
 
+MAX_QUESTION_ROUNDS = 2
+
+
 def brief_step(run: Run, ph: S.Phase, sc: Scenario) -> None:
-    """The lead writes the brief (asking the user once if a design choice is
-    open), then a separate session reviews it; at most two revisions."""
+    """The lead writes the brief (asking the user if a design choice is open),
+    then a separate session reviews it; at most two revisions."""
     del sc
     pdir = run.repo.phase_dir(ph.dirname)
-    answers = _answers(run, ph)
-    rep = lead(run, ph, "brief", "brief", _brief_inputs(run, ph, answers, ""))
-    if rep.get("questions") and not rep.get("brief", "").strip():
-        if answers is None:
-            answers = _ask(run, ph, rep["questions"])
-        rep = lead(
-            run, ph, "brief#answered", "brief", _brief_inputs(run, ph, answers, "")
-        )
+    rep = lead(run, ph, "brief", "brief", _brief_inputs(run, ph, None, ""))
+    answers: str | None = None
+    rnd = 0
+    while rep.get("questions") and not rep.get("brief", "").strip():
+        rnd += 1
+        if rnd > MAX_QUESTION_ROUNDS:
+            raise StopRun(
+                S.NEEDS_REPLAN,
+                f"phase {ph.n}: the lead keeps asking "
+                "design questions instead of writing the brief",
+            )
+        got = _answers(run, ph, rnd)
+        if got is None:
+            got = _ask(run, ph, rep["questions"], rnd)
+        answers = f"{answers}\n{got}" if answers else got
+        key = "brief#answered" if rnd == 1 else f"brief#answered{rnd}"
+        rep = lead(run, ph, key, "brief", _brief_inputs(run, ph, answers, ""))
     _apply_brief(run, ph, rep)
     for i in range(1, MAX_BRIEF_REVISIONS + 2):
         review = worker(
@@ -566,10 +594,17 @@ def brief_step(run: Run, ph: S.Phase, sc: Scenario) -> None:
         _apply_brief(run, ph, rep)
 
 
+# a path named on a line like this must exist already
+_EXISTING_RE = re.compile(
+    r"\b(change|modify|edit|update|extend|refactor|fix|rename|move|in)\b", re.I
+)
+_SKIP_SECTION_RE = re.compile(r"new|test|qa|output|creat", re.I)
+
+
 def plan_review_blockers(run: Run, review: dict[str, Any], brief: Path) -> list[str]:
     """Blocking findings: the reviewer's, plus what code can check itself (a QA
-    check for new behaviour that already passes or cannot run, a named file that
-    does not exist and is not marked new)."""
+    check for new behaviour that already passes or cannot run, and a file the
+    brief says to change that does not exist)."""
     out = [
         f"{f['id']}: {f['title']}: {f['detail']}"
         for f in review.get("findings") or []
@@ -580,20 +615,30 @@ def plan_review_blockers(run: Run, review: dict[str, Any], brief: Path) -> list[
             out.append(f"QA check cannot run: {c['check']} ({c.get('evidence', '')})")
         elif c.get("result") == "passes_now" and c.get("new_behaviour"):
             out.append(
-                f"QA check for new behaviour already passes, so it proves "
+                "QA check for new behaviour already passes, so it proves "
                 f"nothing: {c['check']}"
             )
     if brief.is_file():
-        for line in brief.read_text(encoding="utf-8").splitlines():
-            if re.search(r"\bnew\b|\bcreate|\badd", line, re.I):
-                continue
-            for path in _PATH_RE.findall(line):
-                if not (run.root / path).exists() and not path.startswith(".orch/"):
-                    out.append(
-                        f"the brief names `{path}`, which does not exist "
-                        "(mark it new or fix the path)"
-                    )
+        out += _missing_files(run.root, brief.read_text(encoding="utf-8"))
     return list(dict.fromkeys(out))
+
+
+def _missing_files(root: Path, text: str) -> list[str]:
+    out = []
+    skip = False
+    for line in text.splitlines():
+        if line.startswith("#"):
+            skip = bool(_SKIP_SECTION_RE.search(line))
+            continue
+        if skip or "(new)" in line.lower() or not _EXISTING_RE.search(line):
+            continue
+        for path in _PATH_RE.findall(line):
+            if not path.startswith(".orch/") and not (root / path).exists():
+                out.append(
+                    f"the brief says to change `{path}`, which does not exist "
+                    "(mark it *(new)* or fix the path)"
+                )
+    return out
 
 
 def _apply_brief(run: Run, ph: S.Phase, rep: dict[str, Any]) -> None:
@@ -631,54 +676,69 @@ QUESTIONS_HELP = (
 )
 
 
-def _ask(run: Run, ph: S.Phase, questions: list[dict[str, Any]]) -> str:
+def _qfile(pdir: Path, rnd: int, ext: str) -> Path:
+    return pdir / (f"questions.{ext}" if rnd == 1 else f"questions-{rnd}.{ext}")
+
+
+def _ask(run: Run, ph: S.Phase, questions: list[dict[str, Any]], rnd: int) -> str:
     """Pause as needs-user with every question in one file, or, with
     --auto-decide, take the recommended options."""
     pdir = run.repo.phase_dir(ph.dirname)
+    store.write_json(_qfile(pdir, rnd, "json"), questions)
     if run.st.auto_decide:
-        text = "\n".join(
-            f"- {q['id']} {q['question']}: {q['recommended']} "
-            "(recommended option, taken by --auto-decide)"
-            for q in questions
-        )
-        store.write_text(pdir / "answers.md", text + "\n")
-        run.st.replans.append(
-            {"at": S.now(), "phase": ph.n, "kind": "auto-decide", "answers": text}
-        )
-        return text
+        return _auto_answers(run, ph, questions)
     lines = [f"# Design questions for phase {ph.n}: {ph.title}", "", QUESTIONS_HELP, ""]
     for q in questions:
         lines += [f"## {q['id']}: {q['question']}", ""]
         lines += [f"- {o}" for o in q.get("options") or []]
         lines += ["", f"recommended: {q['recommended']}", "", "answer: ", ""]
-    store.write_text(pdir / "questions.md", "\n".join(lines))
+    qmd = _qfile(pdir, rnd, "md")
+    store.write_text(qmd, "\n".join(lines))
     raise StopRun(
         S.NEEDS_USER,
         f"phase {ph.n} has {len(questions)} design question(s): answer them in "
-        f"{run.rel(pdir / 'questions.md')}",
+        f"{run.rel(qmd)}",
     )
 
 
-def _answers(run: Run, ph: S.Phase) -> str | None:
-    """Answers from answers.md, or from a filled-in questions.md."""
+def _auto_answers(run: Run, ph: S.Phase, questions: list[dict[str, Any]]) -> str:
+    text = "\n".join(
+        f"- {q['id']} {q['question']}: {q['recommended']} "
+        "(recommended option, taken by --auto-decide)"
+        for q in questions
+    )
+    run.st.replans.append(
+        {"at": S.now(), "phase": ph.n, "kind": "auto-decide", "answers": text}
+    )
+    return text
+
+
+def _answers(run: Run, ph: S.Phase, rnd: int) -> str | None:
+    """Answers to round `rnd`'s questions from the filled-in questions file
+    (None when nothing was asked yet). Empty answers take the recommended option
+    under --auto-decide, else the run stays needs-user."""
     pdir = run.repo.phase_dir(ph.dirname)
-    if (pdir / "answers.md").is_file():
-        return (pdir / "answers.md").read_text(encoding="utf-8")
-    qfile = pdir / "questions.md"
-    if not qfile.is_file():
+    qjson, qmd = _qfile(pdir, rnd, "json"), _qfile(pdir, rnd, "md")
+    if not qjson.is_file():
         return None
-    text = qfile.read_text(encoding="utf-8")
-    blocks = re.split(r"^## ", text, flags=re.M)[1:]
+    questions = store.read_json(qjson)
+    text = qmd.read_text(encoding="utf-8") if qmd.is_file() else ""
     out = []
-    for b in blocks:
-        head = b.splitlines()[0]
-        m = re.search(r"^answer:[ \t]*(.*)$", b, re.M)
-        if not m or not m.group(1).strip():
+    for q in questions:
+        m = re.search(
+            rf"^## {re.escape(q['id'])}:.*?^answer:(.*?)(?=^## |\Z)",
+            text,
+            re.M | re.S,
+        )
+        answer = m.group(1).strip() if m else ""
+        if not answer and run.st.auto_decide:
+            answer = f"{q['recommended']} (recommended option, taken by --auto-decide)"
+        if not answer:
             raise StopRun(
                 S.NEEDS_USER,
-                f"phase {ph.n}: unanswered question {head} in {run.rel(qfile)}",
+                f"phase {ph.n}: unanswered question {q['id']} in {run.rel(qmd)}",
             )
-        out.append(f"- {head}: {m.group(1).strip()}")
+        out.append(f"- {q['id']} {q['question']}: {answer}")
     return "\n".join(out)
 
 
@@ -728,7 +788,10 @@ def record(run: Run, ph: S.Phase) -> None:
     ph.commit = gitops.head(run.root)
     run.save()
     _commit_orch(run, f"orch: phase {ph.n} done ({ph.title or ph.slug})")
-    _push(run)
+    try:
+        _push(run)
+    except OrchError as e:  # the next push (or `git push`) carries this phase too
+        store.append_text(run.repo.orch / "push-failures.log", f"{S.now()} {e}\n")
 
 
 # ---------------------------------------------------------------- sessions
@@ -774,9 +837,11 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
 ) -> dict[str, Any]:
     if key in ph.done_steps:
         return store.read_json(_report_path(run, ph, key))
+    _stop_if_interrupted(key)
+    pkey = f"{ph.n}:{key}"
     inputs_path = _write_inputs(run, ph, key, inputs)
     res = L.resolve_role(
-        run.layers, L.load_scenario(run.layers, ph.scenario), role, run.task(ph)
+        run.layers, L.load_scenario(run.layers, run.scenario_of(ph)), role, run.task(ph)
     )
     schema = SCHEMAS[role]
     add_dirs = (run.skills_dir,) if run.skills_dir else ()
@@ -784,11 +849,11 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
     retry_sid: str | None = None
     while True:
         attempts += 1
-        carry_on = retry_sid or run.st.pending.get(key)
+        carry_on = retry_sid or run.st.pending.get(pkey)
         resume = bool(carry_on) or (is_lead and ph.lead_session is not None)
         sid = carry_on or (ph.lead_session if resume else claude.new_session_id())
         with _LOCK:
-            run.st.pending[key] = str(sid)
+            run.st.pending[pkey] = str(sid)
         run.save()
         if cwd is None and role in ("dev", "fix"):
             # commit orch's files (pending included) so dev's `git add -A` and the
@@ -807,15 +872,12 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
         _record_session(run, ph, key, role, r)
         if is_lead and (r.ok or resume):
             ph.lead_session = r.session_id
-            ph.lead_cost_total = r.cost_total
+            if "total_cost_usd" in r.raw:  # an interrupted turn reports no total
+                ph.lead_cost_total = r.cost_total
         if INTERRUPTED.is_set():
-            raise StopRun(
-                S.PAUSED,
-                f"interrupted during {key}; `orch run` resumes that session",
-                kind="interrupted",
-            )
+            _keep_finished(run, ph, (key, pkey, role), r, checked=check is not None)
         with _LOCK:
-            run.st.pending.pop(key, None)
+            run.st.pending.pop(pkey, None)
         if r.ok and r.structured is not None:
             problem = check(r.structured) if check else ""
             if not problem:
@@ -828,7 +890,7 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
                 "Answer again, fixing exactly this.\n",
             )
             continue
-        _stop_unless_retryable(run, ph, key, r, res.config)
+        _stop_unless_retryable(run, ph, pkey, r, res.config)
         if is_lead and resume:
             # the lead's session may live on another machine: start it fresh
             ph.lead_session, ph.lead_cost_total = None, 0.0
@@ -847,14 +909,59 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
     return report
 
 
+def _keep_finished(
+    run: Run,
+    ph: S.Phase,
+    step: tuple[str, str, str],
+    r: claude.SessionResult,
+    *,
+    checked: bool,
+) -> NoReturn:
+    """Ctrl+C landed while this session ran. If it finished anyway, keep its
+    report so resume does not run it again; then pause."""
+    key, pkey, role = step
+    if r.ok and r.structured is not None and not checked:
+        with _LOCK:
+            run.st.pending.pop(pkey, None)
+        _save_report(
+            run,
+            ph,
+            key,
+            role=role,
+            session=r.session_id,
+            cost=r.cost_delta,
+            report=r.structured,
+        )
+        raise StopRun(
+            S.PAUSED,
+            f"interrupted after {key}; `orch run` carries on",
+            kind="interrupted",
+        )
+    raise StopRun(
+        S.PAUSED,
+        f"interrupted during {key}; `orch run` resumes that session",
+        kind="interrupted",
+    )
+
+
+def _stop_if_interrupted(where: str) -> None:
+    if INTERRUPTED.is_set():
+        raise StopRun(
+            S.PAUSED,
+            f"interrupted before {where}; `orch run` carries on",
+            kind="interrupted",
+        )
+
+
 def _stop_unless_retryable(
-    run: Run, ph: S.Phase, key: str, r: claude.SessionResult, cfg: claude.StepConfig
+    run: Run, ph: S.Phase, pkey: str, r: claude.SessionResult, cfg: claude.StepConfig
 ) -> None:
     """A usage limit, an auth failure or an exhausted budget stop the run; the
     session is kept as pending so `orch run` carries on in it."""
+    key = pkey.partition(":")[2]
     if r.error_kind in ("usage_limit", "budget"):
         with _LOCK:
-            run.st.pending[key] = r.session_id
+            run.st.pending[pkey] = r.session_id
     if r.error_kind == "usage_limit":
         raise StopRun(
             S.PAUSED, f"usage limit during {key}", r.reset_at, kind="usage_limit"

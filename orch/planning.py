@@ -7,6 +7,7 @@ state.json."""
 from __future__ import annotations
 
 import re
+import shutil
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -16,6 +17,7 @@ from orch import layers as L
 from orch import state as S
 from orch.errors import ConfigError
 from orch.loop import (
+    INTERRUPTED,
     Run,
     StopRun,
     archive_run,
@@ -25,6 +27,7 @@ from orch.loop import (
     load_state,
     new_run_id,
     read_pitch,
+    sigint_forwarding,
     start_or_resume,
 )
 from orch.repo import Repo
@@ -122,7 +125,12 @@ def plan(
         run_id = new_run_id(repo.root)
         st = S.RunState(run_id=run_id, branch=f"orch/{run_id}")
     else:
-        st = S.load(repo.state_path)
+        st = load_state(repo)
+        if not 1 <= from_n <= len(st.phases) + 1:
+            raise ConfigError(
+                f"--from {from_n}: the run has {len(st.phases)} phases",
+                hint=f"use 1 to {len(st.phases) + 1}",
+            )
     gitops.ensure_branch(repo.root, st.branch)
     ensure_gitignore(repo)
     run = Run(
@@ -143,23 +151,25 @@ def plan(
         done = {r for p in kept for r in p.covers}
         req_ids = [r for r in req_ids if r not in done]
     scenarios = L.list_scenarios(layers)
+    INTERRUPTED.clear()
     try:
-        outline = _outline(
-            run,
-            req_ids=req_ids,
-            scenarios=scenarios,
-            default_sc=default_sc,
-            first_n=first_n,
-            kept=kept,
-        )
+        with sigint_forwarding():
+            outline = _outline(
+                run,
+                req_ids=req_ids,
+                scenarios=scenarios,
+                default_sc=default_sc,
+                first_n=first_n,
+                kept=kept,
+            )
     except StopRun as stop:
         st.status, st.stop_reason, st.reset_at = stop.status, stop.reason, stop.reset_at
+        st.stop_kind = stop.kind
         run.save()
         return st
-    old = [p.title for p in st.phases if p.n >= first_n]
+    old = _drop_replaced(repo, st, first_n)
     st.phases = kept + [
-        _phase(first_n + i, row, default_sc, scenario)
-        for i, row in enumerate(outline["phases"])
+        _phase(first_n + i, row, default_sc) for i, row in enumerate(outline["phases"])
     ]
     if from_n is not None:
         st.replans.append(
@@ -170,19 +180,34 @@ def plan(
                 "after": [p.title for p in st.phases if p.n >= first_n],
             }
         )
-    st.status, st.stop_reason = S.RUNNING, ""
+    st.status, st.stop_reason, st.reset_at, st.stop_kind = S.RUNNING, "", None, ""
     store.write_text(repo.orch / "plan.md", render_plan(st, req_ids))
     run.save()
     gitops.commit_paths(repo.root, [".orch"], f"orch: plan ({len(st.phases)} phases)")
     return st
 
 
-def _phase(n: int, row: dict[str, Any], default_sc: str, cli_sc: str | None) -> S.Phase:
+def _drop_replaced(repo: Repo, st: S.RunState, first_n: int) -> list[str]:
+    """Phases from first_n on are replaced: keep their cost in the run's total,
+    move their folders aside and forget their pending sessions."""
+    replaced = [p for p in st.phases if p.n >= first_n]
+    for p in replaced:
+        st.plan_sessions += p.sessions
+        if (d := repo.phase_dir(p.dirname)).exists():
+            stamp = S.now().replace(":", "")
+            shutil.move(d, repo.orch / "replaced" / f"{stamp}-{p.dirname}")
+    st.pending = {
+        k: v for k, v in st.pending.items() if int(k.partition(":")[0]) < first_n
+    }
+    return [p.title for p in replaced]
+
+
+def _phase(n: int, row: dict[str, Any], default_sc: str) -> S.Phase:
     return S.Phase(
         n=n,
         slug=slugify(row.get("slug") or row["title"]),
         title=row["title"],
-        scenario=cli_sc or row.get("scenario") or default_sc,
+        scenario=row.get("scenario") or default_sc,
         covers=list(row.get("covers") or []),
         deliverable=row.get("deliverable", ""),
         depends_on=list(row.get("depends_on") or []),
@@ -329,6 +354,8 @@ def _session(run: Run, key: str, role: str, inputs: str) -> dict[str, Any]:
             )
         )
         run.save()
+        if INTERRUPTED.is_set():
+            raise StopRun(S.PAUSED, f"interrupted during {key}", kind="interrupted")
         if r.ok and r.structured is not None:
             store.write_json(
                 pdir / "reports" / f"{key.replace('#', '-')}.json", r.structured
@@ -339,7 +366,9 @@ def _session(run: Run, key: str, role: str, inputs: str) -> dict[str, Any]:
             )
             return r.structured
         if r.error_kind == "usage_limit":
-            raise StopRun(S.PAUSED, f"usage limit during {key}", r.reset_at)
+            raise StopRun(
+                S.PAUSED, f"usage limit during {key}", r.reset_at, kind="usage_limit"
+            )
         if r.error_kind in ("auth", "budget") or attempt == 2:  # noqa: PLR2004
             status = S.NEEDS_USER if r.error_kind == "auth" else S.FAILED
             raise StopRun(status, f"{key}: {r.error_kind}: {r.error[:300]}")
@@ -411,19 +440,37 @@ def run(  # noqa: PLR0913 -- the options of `orch run`
     until the reset time and carries on."""
     if repo.state_path.is_file() and load_state(repo).status == S.DONE:
         archive_run(repo)
-    fresh = not repo.state_path.is_file()
-    has_briefs = bool(discover_phases(repo, "full"))
-    if fresh and not has_briefs and (repo.root / "docs" / "pitch.md").is_file():
-        st = plan(repo, scenario=scenario, sets=sets)
-        if st.status != S.RUNNING or pause:
-            return st
+    has_pitch = (repo.root / "docs" / "pitch.md").is_file()
     while True:
-        r = start_or_resume(repo, scenario=scenario, sets=sets)
-        r.st.auto_decide = r.st.auto_decide or auto_decide
-        st = execute(r)
+        st = _run_once(repo, scenario, sets, auto_decide, pause, has_pitch=has_pitch)
         if not (wait and st.status == S.PAUSED and st.stop_kind == "usage_limit"):
             return st
         _sleep(seconds_until(st.reset_at) + WAIT_MARGIN_S)
+
+
+def _run_once(  # noqa: PLR0913 -- the options of `orch run`
+    repo: Repo,
+    scenario: str | None,
+    sets: list[str] | None,
+    auto_decide: bool,
+    pause: bool,
+    *,
+    has_pitch: bool,
+) -> S.RunState:
+    existing = load_state(repo) if repo.state_path.is_file() else None
+    if existing is None and has_pitch and not discover_phases(repo, "full"):
+        st = plan(repo, scenario=scenario, sets=sets)
+        if st.status != S.RUNNING or pause:
+            return st
+    elif existing is not None and not existing.phases:
+        if not has_pitch:  # a planning stop with nothing to plan from
+            raise ConfigError("the run has no phases", hint="write docs/pitch.md")
+        st = plan(repo, scenario=scenario, sets=sets, from_n=1)  # finish planning
+        if st.status != S.RUNNING or pause:
+            return st
+    r = start_or_resume(repo, scenario=scenario, sets=sets)
+    r.st.auto_decide = r.st.auto_decide or auto_decide
+    return execute(r)
 
 
 def seconds_until(iso: str | None) -> float:

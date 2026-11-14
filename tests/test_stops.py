@@ -76,7 +76,7 @@ def test_interrupt_then_resume_carries_on_in_the_same_session(
     assert (st.status, st.stop_kind, list(st.pending)) == (
         S.PAUSED,
         "interrupted",
-        ["dev"],
+        ["1:dev"],
     )
     st = _run(project, scenario=None)
     first, second = fc.calls("orch-dev")
