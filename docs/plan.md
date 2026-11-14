@@ -48,7 +48,7 @@ verification by a subagent (fresh eyes, given only the acceptance list) → fix 
 
 | # | Phase | Acceptance (from spec "Build order") | Status |
 |---|---|---|---|
-| 1 | Session wrapper, layers, state | unit tests: argv, parsing, missing structured output, each error kind, cost delta on resume, repo template beats user one; `orch config` shows provenance; live smoke test (marked `integration`) checks CLAUDE.md loaded and the resolved skill ran | todo |
+| 1 | Session wrapper, layers, state | unit tests: argv, parsing, missing structured output, each error kind, cost delta on resume, repo template beats user one; `orch config` shows provenance; live smoke test (marked `integration`) checks CLAUDE.md loaded and the resolved skill ran | done |
 | 2 | Minimal loop | fake claude: 3 phases finish; gate failing past cap → `blocked`; resume from fresh clone of pushed branch; diff checks | todo |
 | 3 | Review ‖ QA + verify | fake: both ship; fix then ship; rounds exhausted; malformed output → failed after one retry; two worktrees run at once; `log.md` | todo |
 | 4 | Lead session | fake: deviation → exactly one routed check; duplicates merge; do-NOT-fix stays unfixed; learnings + handoff written | todo |

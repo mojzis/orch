@@ -1,0 +1,2 @@
+description = "Low-risk phases (docs, config, one module): one combined review and QA, then fix and gate."
+steps = ["brief", "dev", "gate", "review_combined", "fix", "record"]

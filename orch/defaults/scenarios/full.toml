@@ -1,0 +1,2 @@
+description = "The default: brief, dev, gate, add checks, review and QA in parallel, triage, fix, verify, record."
+steps = ["brief", "dev", "gate", "add_checks", "review_qa", "triage", "fix", "verify", "record"]
