@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ from orch import layers as L
 from orch import state as S
 from orch.errors import ConfigError, StepError
 from orch.gate import GateResult, GateSpec, run_gate
+from orch.lead import check_add_checks, check_triage
 from orch.repo import Repo
 from orch.scenario import Scenario
 from orch.schemas import SCHEMAS
@@ -201,8 +203,10 @@ def start_or_resume(
 def execute(run: Run) -> S.RunState:
     """Run every phase that is not done. Stop states end the call cleanly."""
     st = run.st
-    if st.status in (S.BLOCKED, S.FAILED):
+    if st.status == S.BLOCKED:
         _reopen_current(st)
+    elif (ph := st.current()) is not None and ph.status == S.FAILED:
+        ph.status = "running"  # a crash: carry on exactly where it stopped
     st.status, st.stop_reason, st.reset_at = S.RUNNING, "", None
     st.claude_version = claude.claude_version()
     run.skills_dir = L.materialize_skills(run.layers, run.repo.cache / "skills")
@@ -221,8 +225,8 @@ def execute(run: Run) -> S.RunState:
 
 
 def _reopen_current(st: S.RunState) -> None:
-    """Resuming a blocked or failed phase reruns everything after dev on the code
-    as it is now (the user may have fixed it by hand)."""
+    """Resuming a blocked phase reruns everything after dev on the code as it is
+    now (the user fixed it by hand or edited the brief)."""
     ph = st.current()
     if ph is None:
         return
@@ -259,8 +263,21 @@ def run_phase(run: Run, ph: S.Phase) -> None:
 
     checks: list[dict[str, Any]] = []
     if sc.has("add_checks"):
+        dev_reports = [
+            dev,
+            *[
+                store.read_json(_report_path(run, ph, k))
+                for k in _dev_keys(ph)
+                if k != "dev"
+            ],
+        ]
         rep = lead(
-            run, ph, "add_checks", "add_checks", _add_checks_inputs(run, ph, dev)
+            run,
+            ph,
+            "add_checks",
+            "add_checks",
+            _add_checks_inputs(run, ph, dev),
+            check=lambda a: check_add_checks(dev_reports, a),
         )
         checks = rep.get("checks") or []
         _write_checks(run, ph, checks)
@@ -308,6 +325,7 @@ def check_and_fix(
                 f"triage#{rnd + 1}",
                 "triage",
                 _triage_inputs(run, ph, reports, rnd),
+                check=lambda t, reps=reports: check_triage(reps, t),
             )
             _defer(run, ph, reports, tri, rnd)
             if tri["decision"] == "ship":
@@ -462,9 +480,18 @@ def worker(  # noqa: PLR0913 -- the step's identity plus where it runs
     return _step(run, ph, key, role, inputs, cwd=cwd, is_lead=False)
 
 
-def lead(run: Run, ph: S.Phase, key: str, role: str, inputs: str) -> dict[str, Any]:
-    """The phase's lead session, resumed at each of its steps."""
-    return _step(run, ph, key, role, inputs, cwd=None, is_lead=True)
+def lead(  # noqa: PLR0913 -- the step's identity plus its check
+    run: Run,
+    ph: S.Phase,
+    key: str,
+    role: str,
+    inputs: str,
+    *,
+    check: Callable[[dict[str, Any]], str] | None = None,
+) -> dict[str, Any]:
+    """The phase's lead session, resumed at each of its steps. `check` returns a
+    problem description; the lead gets one chance to correct its answer."""
+    return _step(run, ph, key, role, inputs, cwd=None, is_lead=True, check=check)
 
 
 def _step(  # noqa: PLR0913 -- one place that runs every session
@@ -476,6 +503,7 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
     *,
     cwd: Path | None,
     is_lead: bool,
+    check: Callable[[dict[str, Any]], str] | None = None,
 ) -> dict[str, Any]:
     if key in ph.done_steps:
         return store.read_json(_report_path(run, ph, key))
@@ -512,7 +540,17 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
             ph.lead_session = r.session_id
             ph.lead_cost_total = r.cost_total
         if r.ok and r.structured is not None:
-            break
+            problem = check(r.structured) if check else ""
+            if not problem:
+                break
+            if attempts >= 2:  # noqa: PLR2004 -- one correction, then stop
+                raise StopRun(S.FAILED, f"phase {ph.n} {key}: {problem}")
+            store.write_text(
+                inputs_path,
+                inputs + f"\n## Your previous answer was rejected\n\n{problem}\n"
+                "Answer again, fixing exactly this.\n",
+            )
+            continue
         if r.error_kind == "usage_limit":
             raise StopRun(S.PAUSED, f"usage limit during {key}", r.reset_at)
         if r.error_kind == "auth":
