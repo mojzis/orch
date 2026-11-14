@@ -32,20 +32,9 @@ uv run pytest -m integration -o addopts= tests/test_live.py   # live smoke, ~1 c
      main risk the spec names: is the lead as good as the human orchestrator was?
    - Phase 6: one real run of a five-phase pitch. orch could build part of its own
      backlog, below, as that pitch.
-2. **Open findings from the phase 5–6 review** (not fixed):
-   - A credential failure reported by dev, QA or review (in `unresolved_issues` or a
-     finding) does not pause the run. Only the probe's does.
-   - Report gaps: tokens by phase (only by role now), plan sessions record no tokens,
-     the "QA evidence" column is not tied to each requirement, replans print as raw
-     dicts.
-   - `planning._session` resolves outline roles without the pitch's
-     `scenario`/`set`.
-   - `auto_decide` stays set in state for the rest of the run once passed.
-   - `archive_run` on the old run branch starts the new run on top of it (works, but
-     there is no warning).
-   - The SIGINT handler takes `_CHILDREN_LOCK` (`claude.interrupt_children`). It can
-     deadlock if the signal lands while the main thread holds the lock. Make it an
-     RLock, or snapshot without the lock.
+2. ~~Open findings from the phase 5–6 review~~: all fixed in session 2 (worker
+   `credential failure:` pauses, report tokens/evidence/replans, plan roles use the
+   pitch's scenario/set, `--auto-decide` per invocation, archive warning, RLock).
 3. **Spec items not built:**
    - The `spike` scenario (brief → dev on a throwaway branch → findings report). It
      needs a scenario kind that relaxes the "checked by another session" rule and

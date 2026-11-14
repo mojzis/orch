@@ -29,6 +29,7 @@ from orch.repo import Repo
 from orch.report import render_report
 from orch.scenario import Scenario
 from orch.schemas import SCHEMAS
+from orch.ui import err
 
 EXIT_PAUSED = 75
 EXIT_INTERRUPTED = 130
@@ -178,6 +179,12 @@ def archive_run(repo: Repo) -> Path:
         if (d := repo.phase_dir(p.dirname)).exists():
             (dest / "phases").mkdir(exist_ok=True)
             shutil.move(d, dest / "phases" / p.dirname)
+    if gitops.current_branch(repo.root) == st.branch:
+        err.print(
+            f"[yellow]warning:[/] the new run starts on top of the finished run's "
+            f"branch {st.branch}. If that run is not merged yet, its commits come "
+            "along; switch to main first to start clean."
+        )
     return dest
 
 
@@ -807,7 +814,40 @@ def worker(  # noqa: PLR0913 -- the step's identity plus where it runs
     cwd: Path | None = None,
 ) -> dict[str, Any]:
     """A fresh session. Retried once on a crash or bad output."""
-    return _step(run, ph, key, role, inputs, cwd=cwd, is_lead=False)
+    rep = _step(run, ph, key, role, inputs, cwd=cwd, is_lead=False)
+    if found := credential_failures(rep):
+        _pause_for_credentials(run, ph, key, found, resumable=cwd is None)
+    return rep
+
+
+_CRED_FAILURE_RE = re.compile(r"credential failure", re.I)
+
+
+def credential_failures(rep: dict[str, Any]) -> str:
+    """The items a worker marked "credential failure" (templates ask for that
+    exact phrase), in its unresolved issues or its findings."""
+    items = [
+        *(rep.get("unresolved_issues") or []),
+        *(
+            f"{f.get('title', '')}: {f.get('detail', '')}"
+            for f in rep.get("findings") or []
+        ),
+    ]
+    return "; ".join(x for x in items if _CRED_FAILURE_RE.search(x))
+
+
+def _pause_for_credentials(
+    run: Run, ph: S.Phase, key: str, found: str, *, resumable: bool
+) -> NoReturn:
+    """Forget the step so `orch run` redoes it once the user has fixed the key.
+    A session in the repo root is resumed; one in a worktree (gone now) is not."""
+    with _LOCK:
+        ph.done_steps.remove(key)
+        if resumable:
+            last = next(s for s in reversed(ph.sessions) if s.key == key)
+            run.st.pending[f"{ph.n}:{key}"] = last.session_id
+    run.save()
+    raise StopRun(S.NEEDS_USER, f"phase {ph.n} {key}: credential failure: {found}")
 
 
 def lead(  # noqa: PLR0913 -- the step's identity plus its check
@@ -984,25 +1024,27 @@ def _prev_cost(ph: S.Phase, key: str, sid: str | None, is_lead: bool) -> float:
     return sum(s.cost for s in ph.sessions if s.key == key and s.session_id == sid)
 
 
+def session_record(key: str, role: str, r: claude.SessionResult) -> S.SessionRecord:
+    usage = r.usage or {}
+    return S.SessionRecord(
+        key=key,
+        role=role,
+        session_id=r.session_id,
+        ok=r.ok,
+        cost=r.cost_delta,
+        error_kind=r.error_kind,
+        tokens_in=int(usage.get("input_tokens") or 0)
+        + int(usage.get("cache_read_input_tokens") or 0)
+        + int(usage.get("cache_creation_input_tokens") or 0),
+        tokens_out=int(usage.get("output_tokens") or 0),
+    )
+
+
 def _record_session(
     run: Run, ph: S.Phase, key: str, role: str, r: claude.SessionResult
 ) -> None:
-    usage = r.usage or {}
     with _LOCK:
-        ph.sessions.append(
-            S.SessionRecord(
-                key=key,
-                role=role,
-                session_id=r.session_id,
-                ok=r.ok,
-                cost=r.cost_delta,
-                error_kind=r.error_kind,
-                tokens_in=int(usage.get("input_tokens") or 0)
-                + int(usage.get("cache_read_input_tokens") or 0)
-                + int(usage.get("cache_creation_input_tokens") or 0),
-                tokens_out=int(usage.get("output_tokens") or 0),
-            )
-        )
+        ph.sessions.append(session_record(key, role, r))
     run.save()
 
 

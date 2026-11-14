@@ -27,6 +27,7 @@ from orch.loop import (
     load_state,
     new_run_id,
     read_pitch,
+    session_record,
     sigint_forwarding,
     start_or_resume,
 )
@@ -328,13 +329,15 @@ def _session(run: Run, key: str, role: str, inputs: str) -> dict[str, Any]:
     pdir = run.repo.orch / "plan"
     inputs_path = pdir / "inputs" / f"{key.replace('#', '-')}.md"
     store.write_text(inputs_path, inputs)
-    sc = L.load_scenario(run.layers, run.cli_scenario or "full")
-    res = L.resolve_role(
-        run.layers,
-        sc,
-        role,
-        L.TaskLayer((("cli:--set", run.cli_sets),) if run.cli_sets else ()),
+    sc = L.load_scenario(
+        run.layers, run.cli_scenario or run.pitch.get("scenario") or "full"
     )
+    entries: list[tuple[str, dict[str, dict[str, Any]]]] = []
+    if run.pitch.get("set"):
+        entries.append(("task:pitch", run.pitch["set"]))
+    if run.cli_sets:
+        entries.append(("cli:--set", run.cli_sets))
+    res = L.resolve_role(run.layers, sc, role, L.TaskLayer(tuple(entries)))
     for attempt in (1, 2):
         r = claude.run_session(
             res.config,
@@ -343,16 +346,7 @@ def _session(run: Run, key: str, role: str, inputs: str) -> dict[str, Any]:
             schema=SCHEMAS[role],
             add_dirs=(run.skills_dir,) if run.skills_dir else (),
         )
-        run.st.plan_sessions.append(
-            S.SessionRecord(
-                key=key,
-                role=role,
-                session_id=r.session_id,
-                ok=r.ok,
-                cost=r.cost_delta,
-                error_kind=r.error_kind,
-            )
-        )
+        run.st.plan_sessions.append(session_record(key, role, r))
         run.save()
         if INTERRUPTED.is_set():
             raise StopRun(S.PAUSED, f"interrupted during {key}", kind="interrupted")
@@ -469,7 +463,7 @@ def _run_once(  # noqa: PLR0913 -- the options of `orch run`
         if st.status != S.RUNNING or pause:
             return st
     r = start_or_resume(repo, scenario=scenario, sets=sets)
-    r.st.auto_decide = r.st.auto_decide or auto_decide
+    r.st.auto_decide = auto_decide  # per invocation: a resume without the flag asks
     return execute(r)
 
 

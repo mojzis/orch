@@ -15,6 +15,7 @@ They point at the brief, the fix brief, the fix report and the earlier findings.
 3. Rerun only the checks whose inputs changed, plus the fix-specific ones. Record
    them in `checks_run` with evidence.
 4. New problems the fix introduced go in `findings` (`V1`, ...).
+5. A check that fails because a key, token or login is rejected is not a code finding: stop and report one finding titled `credential failure: <what>`. orch pauses the run for the user. Never work around a bad key.
 
 `verdict` is `fix` only if a must-fix item is not fixed or a new high/medium problem
 appeared. Fill `preexisting` and `proposed_oracles` as usual (often empty).

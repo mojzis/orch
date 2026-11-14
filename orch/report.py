@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,36 @@ def _evidence(reports: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _naming(evidence: list[str], rid: str) -> list[str]:
+    """The checks that name the requirement (QA is asked to prefix them with its
+    id). None named: say so, rather than pass off the phase's checks as proof."""
+    named = [e for e in evidence if re.search(rf"\b{re.escape(rid)}\b", e)]
+    if named or not evidence:
+        return named
+    return [f"no check names {rid}"]
+
+
+def _cell(items: list[str]) -> str:
+    return "; ".join(items).replace("|", "/").replace("\n", " ") or "-"
+
+
+def _replan(r: dict[str, Any]) -> str:
+    at = str(r.get("at", ""))[:16].replace("T", " ")
+    if "from_phase" in r:
+        before = ", ".join(r.get("before") or []) or "-"
+        after = ", ".join(r.get("after") or []) or "-"
+        return f"- {at} replanned from phase {r['from_phase']}: {before} -> {after}"
+    if r.get("kind") == "scenario":
+        return (
+            f"- {at} phase {r.get('phase')}: scenario {r.get('before')} -> "
+            f"{r.get('after')} ({r.get('reason') or 'no reason given'})"
+        )
+    if r.get("kind") == "auto-decide":
+        answers = str(r.get("answers", "")).replace("\n", "\n  ")
+        return f"- {at} phase {r.get('phase')}: --auto-decide took\n  {answers}"
+    return f"- {at} {r}"
+
+
 def render_report(
     root: Path, st: S.RunState, req_ids: list[str], final_qa: dict[str, Any] | None
 ) -> str:
@@ -58,18 +89,20 @@ def render_report(
         for p in phases:
             ev = _evidence(_reports(orch / "phases" / p.dirname))
             lines.append(
-                f"| {rid} | {p.n}. {p.title} | {p.status} | "
-                f"{'; '.join(ev[:3]).replace('|', '/') or '-'} |"
+                f"| {rid} | {p.n}. {p.title} | {p.status} | {_cell(_naming(ev, rid))} |"
             )
     lines += ["", "## Phases", ""]
     lines += [
-        "| # | phase | scenario | status | fix rounds | sessions | cost |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| # | phase | scenario | status | fix rounds | sessions | tokens in "
+        "| tokens out | cost |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for p in st.phases:
         lines.append(
             f"| {p.n} | {p.title or p.slug} | {p.scenario} | {p.status} | "
-            f"{p.fix_round} | {len(p.sessions)} | ${p.cost():.2f} |"
+            f"{p.fix_round} | {len(p.sessions)} | "
+            f"{sum(s.tokens_in for s in p.sessions)} | "
+            f"{sum(s.tokens_out for s in p.sessions)} | ${p.cost():.2f} |"
         )
     lines += ["", "## Tokens and cost by role", ""]
     by_role: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
@@ -79,6 +112,8 @@ def render_report(
             by_role[s.role][1] += s.tokens_out
             by_role[s.role][2] += s.cost
     for s in st.plan_sessions:
+        by_role[s.role][0] += s.tokens_in
+        by_role[s.role][1] += s.tokens_out
         by_role[s.role][2] += s.cost
     lines += ["| role | tokens in | tokens out | cost |", "| --- | --- | --- | --- |"]
     for role, (ti, to, c) in sorted(by_role.items()):
@@ -86,7 +121,7 @@ def render_report(
     issues = _plan_issues(orch, st)
     lines += ["", "## Plan issues raised", ""] + (issues or ["(none)"])
     lines += ["", "## Replans", ""]
-    lines += [f"- {r}" for r in st.replans] or ["(none)"]
+    lines += [_replan(r) for r in st.replans] or ["(none)"]
     if final_qa is not None:
         lines += [
             "",

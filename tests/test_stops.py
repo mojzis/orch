@@ -340,3 +340,67 @@ def test_reopened_blocked_phase_does_not_duplicate_backlog(
     assert _run(project, scenario=None).status == S.BLOCKED
     backlog = (project / ".orch" / "backlog.md").read_text()
     assert backlog.count("**R2**") == 1
+
+
+def test_dev_credential_failure_pauses_and_resumes_the_dev_session(
+    project: Path, fc: FakeClaude
+) -> None:
+    bad_key = DEV_OK | {"unresolved_issues": ["credential failure: API key rejected"]}
+    fc.on("orch-dev", dev("work.txt", report=bad_key), dev("work.txt"))
+    st = _run(project)
+    assert (st.status, "API key rejected" in st.stop_reason) == (S.NEEDS_USER, True)
+    st = _run(project, scenario=None)
+    first, second = fc.calls("orch-dev")
+    assert (st.status, second["resume"], second["session"]) == (
+        S.DONE,
+        True,
+        first["session"],
+    )
+
+
+def test_checker_credential_finding_pauses_and_reruns_the_check(
+    project: Path, fc: FakeClaude
+) -> None:
+    cred = finding("C1", title="credential failure: token expired")
+    fc.on(
+        "orch-combined", {"structured": checker("fix", cred)}, {"structured": checker()}
+    )
+    assert _run(project).status == S.NEEDS_USER
+    st = _run(project, scenario=None)
+    assert (st.status, len(fc.calls("orch-combined")), fc.calls("orch-fix")) == (
+        S.DONE,
+        2,
+        [],
+    )
+
+
+def test_a_finding_merely_about_credentials_does_not_pause(
+    project: Path, fc: FakeClaude
+) -> None:
+    about = finding("C1", severity="low", title="credentials are logged in plain text")
+    fc.on("orch-combined", {"structured": checker("ship", about)})
+    assert _run(project).status == S.DONE
+
+
+def test_qa_credential_finding_in_a_worktree_pauses(
+    project: Path, fc: FakeClaude
+) -> None:
+    cred = finding("Q1", title="credential failure: 401 from the API")
+    fc.on("orch-qa", {"structured": checker("fix", cred)}, {"structured": checker()})
+    st = _run(project, scenario="full")
+    assert (st.status, st.pending) == (S.NEEDS_USER, {}), st.stop_reason
+    assert _run(project, scenario=None).status == S.DONE
+
+
+def test_archiving_on_the_old_run_branch_warns(
+    project: Path, fc: FakeClaude, capsys: pytest.CaptureFixture[str]
+) -> None:
+    st1 = _run(project)
+    d = project / ".orch" / "phases" / "02-more"
+    d.mkdir()
+    (d / "brief.md").write_text("# More\n")
+    git(project, "add", "-A")
+    git(project, "commit", "-qm", "next phase")
+    capsys.readouterr()
+    _run(project)
+    assert st1.branch in capsys.readouterr().err

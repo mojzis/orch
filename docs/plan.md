@@ -71,3 +71,4 @@ All six phases were built in session 1. Remaining work:
   and the lead ($2.77). The live runs found the gate flagging `__pycache__` (fixed with
   `dirty_ignore`).
 - 2026-11-14 (end): phase 5–6 review findings fixed; live smoke run on the final code ok ($0.93). Handoff: docs/next-session.md.
+- 2026-11-14 (session 2): fixed the open phase 5–6 review findings (see next-session.md item 2).

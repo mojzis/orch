@@ -106,7 +106,7 @@ def child_env() -> dict[str, str]:
 
 
 _CHILDREN: set[subprocess.Popen[str]] = set()
-_CHILDREN_LOCK = threading.Lock()
+_CHILDREN_LOCK = threading.RLock()  # re-entrant: the SIGINT handler takes it too
 
 
 def _subprocess_runner(

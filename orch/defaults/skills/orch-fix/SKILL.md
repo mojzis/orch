@@ -15,6 +15,8 @@ do-NOT-fix list.
 - Add a test per fix that fails before it and passes after.
 - Same rules as dev: small commits, full typecheck and tests before each, no new
   skip/xfail, no deleted tests, no edits to `QA.md`, never `--no-verify`, clean tree.
+- A credential failure: stop and report it in `unresolved_issues`, starting with
+  `credential failure:`.
 
 Report with the same fields as dev: `summary`, `commits`, `tests`, `design`,
 `real_run`, `deviations`, `unresolved_issues`.

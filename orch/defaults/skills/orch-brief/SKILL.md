@@ -38,6 +38,7 @@ The `brief` is markdown with these sections, in order:
 - **Acceptance**: numbered, observable criteria `A1`, `A2`, ...
 - **Functional QA**: per criterion a command, a reference case, an invariant or a
   bound with units, each `confirmed` or `proposed`, with at least one negative
-  control. A browser check for UI phases. A check for new behaviour must fail today
+  control. Each check starts with the requirement id it proves (`R2: ...`), if any.
+  A browser check for UI phases. A check for new behaviour must fail today
 - **Tests to write**
 - **Baseline**: test count, coverage and check status right now (run them)

@@ -14,8 +14,10 @@
 
 1. `3`, **needs-user**: read the reason. A design question: fill in each
    `answer:` in `.orch/phases/NN-*/questions.md`, then `orch run` (or
-   `orch run --auto-decide` to take the recommended options). Credentials or
-   budget: fix them, then `orch run`.
+   `orch run --auto-decide` to take the recommended options; the flag lasts one
+   invocation). Credentials (from the probe, or a dev, fix, review or QA session
+   that reported `credential failure:`) or budget: fix them, then `orch run`. A
+   dev or fix session resumes where it stopped; a check runs again.
 2. `75`, **paused** on a usage limit: `orch run` after the reset time
    (`orch status` shows it), or `orch run --wait`.
 3. `130`, **paused** by Ctrl+C: `orch run` resumes the interrupted session.

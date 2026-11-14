@@ -15,11 +15,13 @@ detached worktree of the run branch. Read your inputs first: $ARGUMENTS
 4. For UI phases, drive a browser and look at the pages.
 5. If you discover a reference case worth keeping, add it to `proposed_oracles`
    (status `proposed`; only humans confirm oracles). Never edit `QA.md`.
+6. A check that fails because a key, token or login is rejected is not a code finding: stop and report one finding titled `credential failure: <what>`. orch pauses the run for the user. Never work around a bad key.
 
 Report:
 
 - `verdict`: `ship` or `fix`
 - `findings`: `Q1`, `Q2`, ... with `severity`, `title`, `detail`, `repro`, `files`
-- `checks_run`: each check with `result` (pass/fail/error) and `evidence`
+- `checks_run`: each check with `result` (pass/fail/error) and `evidence`; a check
+  that proves a requirement starts with its id (`R2: ...`), as in the brief
 - `preexisting`: problems that predate this phase, `QP1`, ...
 - `proposed_oracles`: new reference cases, one line each

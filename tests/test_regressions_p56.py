@@ -69,6 +69,19 @@ def test_rerun_after_outline_needs_replan_does_not_finish(
     assert st.status != S.DONE, "a run with zero phases was reported done"
 
 
+def test_plan_sessions_honour_the_pitch_settings(project: Path, fc: FakeClaude) -> None:
+    pitch = project / "docs/pitch.md"
+    pitch.write_text(
+        pitch.read_text().replace(
+            "title: toy", "title: toy\nset: [outline.model=haiku]"
+        )
+    )
+    git(project, "commit", "-qam", "pitch settings")
+    planning.plan(Repo(project))
+    argv = fc.calls("orch-outline")[0]["argv"]
+    assert argv[argv.index("--model") + 1] == "haiku", argv
+
+
 # ---------------------------------------------------------------- questions
 
 
@@ -78,6 +91,15 @@ def test_auto_decide_after_questions_were_asked(project: Path, fc: FakeClaude) -
     # the questions file promises that --auto-decide takes the recommended options
     st = planning.run(Repo(project), auto_decide=True)
     assert st.status == S.DONE, st.stop_reason
+
+
+def test_auto_decide_does_not_outlive_its_invocation(
+    project: Path, fc: FakeClaude
+) -> None:
+    fc.on("orch-brief", USAGE, QUESTION, BRIEF)
+    assert planning.run(Repo(project), auto_decide=True).status == S.PAUSED
+    # resumed without --auto-decide: the question is asked, not auto-answered
+    assert planning.run(Repo(project)).status == S.NEEDS_USER
 
 
 def test_answer_on_the_next_line_is_read(project: Path, fc: FakeClaude) -> None:

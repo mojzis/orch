@@ -20,7 +20,8 @@ process learnings, the handoff from the previous phase.
    test, and do not edit `QA.md` or any confirmed oracle: orch's gate rejects those.
 4. A run against real data or a paid API is **exploratory**: follow the brief's probe
    and budget rules, commit nothing it produces, and report what you saw.
-5. A credential failure means stop and report it in `unresolved_issues`. Never work
+5. A credential failure means stop and report it in `unresolved_issues`, starting
+   with the words `credential failure:` (orch pauses the run on them). Never work
    around a bad key.
 6. If a "settled" fact or rule in the brief turns out wrong, do not silently switch:
    do what you think is right and say so in `deviations`. Every workaround is a

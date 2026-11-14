@@ -17,6 +17,7 @@ They point at the brief, the dev report and the extra checks routed to you.
 4. Reproduce each finding where cheap (a one-off script or test run in this worktree;
    do not commit). Run every extra check routed to you.
 5. Problems that existed before this phase go in `preexisting`, not `findings`.
+6. A check that fails because a key, token or login is rejected is not a code finding: stop and report one finding titled `credential failure: <what>`. orch pauses the run for the user. Never work around a bad key.
 
 Report:
 
