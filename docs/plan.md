@@ -51,7 +51,7 @@ verification by a subagent (fresh eyes, given only the acceptance list) → fix 
 | 1 | Session wrapper, layers, state | unit tests: argv, parsing, missing structured output, each error kind, cost delta on resume, repo template beats user one; `orch config` shows provenance; live smoke test (marked `integration`) checks CLAUDE.md loaded and the resolved skill ran | done |
 | 2 | Minimal loop | fake claude: 3 phases finish; gate failing past cap → `blocked`; resume from fresh clone of pushed branch; diff checks | done; live 2-phase toy run ok ($1.88) |
 | 3 | Review ‖ QA + verify | fake: both ship; fix then ship; rounds exhausted; malformed output → failed after one retry; two worktrees run at once; `log.md` | done; live full-scenario run ok ($2.77) |
-| 4 | Lead session | fake: deviation → exactly one routed check; duplicates merge; do-NOT-fix stays unfixed; learnings + handoff written | done (fake); live comparison with happytube pending |
+| 4 | Lead session | fake: deviation → exactly one routed check; duplicates merge; do-NOT-fix stays unfixed; learnings + handoff written | done; live comparison with happytube 5b: triage matched, add_checks gained risk checks |
 | 5 | `orch plan` + briefs | fake: uncovered requirement; already-passing QA check; brief naming missing file; paid-API phase w/o real-data; planner change needs reason; design question → `needs-user` | done; live plan→brief→run of a 2-requirement pitch ok ($8.89) |
 | 6 | Stops, probe, report | SIGINT → paused + resume; usage limit → exit 75 + `--wait`; credentials → `needs-user`; probe step; run report | done (fake) |
 
@@ -72,3 +72,4 @@ All six phases were built in session 1. Remaining work:
   `dirty_ignore`).
 - 2026-11-14 (end): phase 5–6 review findings fixed; live smoke run on the final code ok ($0.93). Handoff: docs/next-session.md.
 - 2026-11-14 (session 2): fixed the open phase 5–6 review findings (see next-session.md item 2).
+- 2026-11-14 (session 2): phase 4 live acceptance against happytube 5b ($4.03); add_checks gained risk checks. Personal skills shadowed orch's (fixed with the `orchskill-` prefix).

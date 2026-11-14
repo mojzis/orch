@@ -26,10 +26,9 @@ uv run pytest -m integration -o addopts= tests/test_live.py   # live smoke, ~1 c
 ## Left to do, in priority order
 
 1. **Live acceptance not yet run** (the spec asks for these):
-   - Phase 4: rerun one finished happytube phase's dev report through the lead
-     (`orch-add-checks`, `orch-triage`) and compare its checks and fix brief with the
-     hand-written ones in `~/git/happytube` (`docs/process-learnings.md`). This is the
-     main risk the spec names: is the lead as good as the human orchestrator was?
+   - ~~Phase 4~~: done in session 2, see
+     [acceptance/phase4-lead-vs-human.md](acceptance/phase4-lead-vs-human.md).
+     Triage matched the human; add_checks now also writes risk checks.
    - Phase 6: one real run of a five-phase pitch. orch could build part of its own
      backlog, below, as that pitch.
 2. ~~Open findings from the phase 5–6 review~~: all fixed in session 2 (worker

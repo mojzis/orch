@@ -16,4 +16,20 @@ appears in more than one report gets one check:
 - `check`: one concrete instruction: what to run or read, and what result would mean
   the deviation is fine
 
-One check per item, no more, no fewer. If the report has neither, return an empty list.
+One check per item, no more, no fewer.
+
+Then read the phase diff (`git diff <base>..HEAD`, base in the brief or inputs) and
+add up to **5 risk checks** for risky changes that no deviation or issue covers and
+that the brief's Functional QA does not already exercise. Their `source` is
+`risk: <area>`. Where a human orchestrator found the bugs that mattered:
+
+- a script with side effects (git commit/push, deploy, cron, file deletion): route
+  to `qa`, run it in a throwaway repo with a bare local remote and stubbed commands,
+  and walk the failure paths (nothing changed, the command fails, a retry next run)
+- CI or deploy config: `review` its triggers and `paths:` filters against every
+  file that changes the output
+- a new HTTP route or static mount: `qa` the guard, path traversal, other methods
+  (HEAD), and which handler wins when two match
+
+No risky change left uncovered: add no risk checks. If there are no deviations,
+issues or risks, return an empty list.

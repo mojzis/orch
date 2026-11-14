@@ -5,22 +5,32 @@ from __future__ import annotations
 
 from typing import Any
 
+RISK_PREFIX = "risk:"
+MAX_RISK_CHECKS = 5
+
 
 def check_add_checks(dev_reports: list[dict[str, Any]], rep: dict[str, Any]) -> str:
-    """Exactly one routed check per deviation and per unresolved issue."""
+    """Exactly one routed check per deviation and per unresolved issue, plus at
+    most MAX_RISK_CHECKS "risk: <area>" checks for risky parts of the diff that no
+    deviation covers (the phase 4 acceptance run: the human's findings that
+    mattered came from such checks)."""
     wanted: list[str] = []
     for d in dev_reports:
         for x in [*(d.get("deviations") or []), *(d.get("unresolved_issues") or [])]:
             if x.strip() and x not in wanted:  # the same item twice needs one check
                 wanted.append(x)
     checks = rep.get("checks") or []
-    sources = [c.get("source", "") for c in checks]
+    risks = [c for c in checks if c.get("source", "").startswith(RISK_PREFIX)]
+    items = [c for c in checks if c not in risks]
+    sources = [c.get("source", "") for c in items]
     problems = []
-    if len(checks) != len(wanted):
-        problems.append(f"{len(wanted)} item(s) need a check, got {len(checks)}")
+    if len(items) != len(wanted):
+        problems.append(f"{len(wanted)} item(s) need a check, got {len(items)}")
     missing = [w for w in wanted if w not in sources]
     if missing:
         problems.append("no check for: " + "; ".join(missing))
+    if len(risks) > MAX_RISK_CHECKS:
+        problems.append(f"{len(risks)} risk checks, at most {MAX_RISK_CHECKS}")
     return " / ".join(problems)
 
 
