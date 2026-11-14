@@ -249,13 +249,14 @@ def run_phase(run: Run, ph: S.Phase) -> None:
         ph.base = gitops.head(run.root)
         run.save()
     brief = pdir / "brief.md"
+    planned = bool(ph.covers or ph.deliverable)  # from `orch plan`, not hand-written
+    if planned and sc.has("brief") and "brief:ok" not in ph.done_steps:
+        brief_step(run, ph, sc)
+        ph.done_steps.append("brief:ok")
+        run.save()
+        sc = L.load_scenario(run.layers, ph.scenario)  # the lead may switch it
     if not brief.is_file():
-        if sc.has("brief"):
-            brief_step(run, ph, sc)
-        if not brief.is_file():
-            raise StopRun(
-                S.NEEDS_REPLAN, f"phase {ph.n} has no brief at {run.rel(brief)}"
-            )
+        raise StopRun(S.NEEDS_REPLAN, f"phase {ph.n} has no brief at {run.rel(brief)}")
     _commit_orch(run, f"orch: phase {ph.n} start")
 
     dev = worker(run, ph, "dev", "dev", _dev_inputs(run, ph))
@@ -438,9 +439,159 @@ def probe(run: Run, ph: S.Phase) -> None:
         )
 
 
+MAX_BRIEF_REVISIONS = 2
+_PATH_RE = re.compile(r"`([\w./-]+/[\w.-]+\.\w+)`")
+
+
 def brief_step(run: Run, ph: S.Phase, sc: Scenario) -> None:
-    """Placeholder until build phase 5: per-phase briefs come from `orch plan`."""
-    del run, ph, sc
+    """The lead writes the brief (asking the user once if a design choice is
+    open), then a separate session reviews it; at most two revisions."""
+    del sc
+    pdir = run.repo.phase_dir(ph.dirname)
+    answers = _answers(run, ph)
+    rep = lead(run, ph, "brief", "brief", _brief_inputs(run, ph, answers, ""))
+    if rep.get("questions") and not rep.get("brief", "").strip():
+        if answers is None:
+            answers = _ask(run, ph, rep["questions"])
+        rep = lead(
+            run, ph, "brief#answered", "brief", _brief_inputs(run, ph, answers, "")
+        )
+    _apply_brief(run, ph, rep)
+    for i in range(1, MAX_BRIEF_REVISIONS + 2):
+        review = worker(
+            run, ph, f"plan_review#{i}", "plan_review", _plan_review_inputs(run, ph)
+        )
+        blocking = plan_review_blockers(run, review, pdir / "brief.md")
+        store.write_json(pdir / "reports" / f"plan_review-{i}-blocking.json", blocking)
+        if not blocking:
+            return
+        if i > MAX_BRIEF_REVISIONS:
+            raise StopRun(
+                S.NEEDS_REPLAN,
+                f"phase {ph.n}: the brief still has blocking plan-review findings "
+                f"after {MAX_BRIEF_REVISIONS} revisions: " + "; ".join(blocking)[:400],
+            )
+        notes = "\n".join(f"- {b}" for b in blocking)
+        rep = lead(
+            run, ph, f"brief_rev#{i}", "brief", _brief_inputs(run, ph, answers, notes)
+        )
+        _apply_brief(run, ph, rep)
+
+
+def plan_review_blockers(run: Run, review: dict[str, Any], brief: Path) -> list[str]:
+    """Blocking findings: the reviewer's, plus what code can check itself (a QA
+    check for new behaviour that already passes or cannot run, a named file that
+    does not exist and is not marked new)."""
+    out = [
+        f"{f['id']}: {f['title']}: {f['detail']}"
+        for f in review.get("findings") or []
+        if f.get("blocking")
+    ]
+    for c in review.get("qa_dry_run") or []:
+        if c.get("result") == "cannot_run":
+            out.append(f"QA check cannot run: {c['check']} ({c.get('evidence', '')})")
+        elif c.get("result") == "passes_now" and c.get("new_behaviour"):
+            out.append(
+                f"QA check for new behaviour already passes, so it proves "
+                f"nothing: {c['check']}"
+            )
+    if brief.is_file():
+        for line in brief.read_text(encoding="utf-8").splitlines():
+            if re.search(r"\bnew\b|\bcreate|\badd", line, re.I):
+                continue
+            for path in _PATH_RE.findall(line):
+                if not (run.root / path).exists() and not path.startswith(".orch/"):
+                    out.append(
+                        f"the brief names `{path}`, which does not exist "
+                        "(mark it new or fix the path)"
+                    )
+    return list(dict.fromkeys(out))
+
+
+def _apply_brief(run: Run, ph: S.Phase, rep: dict[str, Any]) -> None:
+    text = rep.get("brief", "").strip()
+    if not text:
+        raise StopRun(S.FAILED, f"phase {ph.n}: the lead returned no brief")
+    pdir = run.repo.phase_dir(ph.dirname)
+    store.write_text(
+        pdir / "brief.md",
+        f"# {ph.title or ph.slug}\n\n{text}\n"
+        if not text.startswith("# ")
+        else text + "\n",
+    )
+    new_sc = (rep.get("scenario") or "").strip()
+    if new_sc and new_sc != ph.scenario and not run.cli_scenario:
+        L.load_scenario(run.layers, new_sc)  # must exist
+        run.st.replans.append(
+            {
+                "at": S.now(),
+                "phase": ph.n,
+                "kind": "scenario",
+                "before": ph.scenario,
+                "after": new_sc,
+                "reason": rep.get("scenario_reason", ""),
+            }
+        )
+        ph.scenario = new_sc
+        run.save()
+
+
+QUESTIONS_HELP = (
+    "Write your choice after each `answer:` (an option or your own words), save, "
+    "then run `orch run` again. `orch run --auto-decide` takes the recommended "
+    "options instead."
+)
+
+
+def _ask(run: Run, ph: S.Phase, questions: list[dict[str, Any]]) -> str:
+    """Pause as needs-user with every question in one file, or, with
+    --auto-decide, take the recommended options."""
+    pdir = run.repo.phase_dir(ph.dirname)
+    if run.st.auto_decide:
+        text = "\n".join(
+            f"- {q['id']} {q['question']}: {q['recommended']} "
+            "(recommended option, taken by --auto-decide)"
+            for q in questions
+        )
+        store.write_text(pdir / "answers.md", text + "\n")
+        run.st.replans.append(
+            {"at": S.now(), "phase": ph.n, "kind": "auto-decide", "answers": text}
+        )
+        return text
+    lines = [f"# Design questions for phase {ph.n}: {ph.title}", "", QUESTIONS_HELP, ""]
+    for q in questions:
+        lines += [f"## {q['id']}: {q['question']}", ""]
+        lines += [f"- {o}" for o in q.get("options") or []]
+        lines += ["", f"recommended: {q['recommended']}", "", "answer: ", ""]
+    store.write_text(pdir / "questions.md", "\n".join(lines))
+    raise StopRun(
+        S.NEEDS_USER,
+        f"phase {ph.n} has {len(questions)} design question(s): answer them in "
+        f"{run.rel(pdir / 'questions.md')}",
+    )
+
+
+def _answers(run: Run, ph: S.Phase) -> str | None:
+    """Answers from answers.md, or from a filled-in questions.md."""
+    pdir = run.repo.phase_dir(ph.dirname)
+    if (pdir / "answers.md").is_file():
+        return (pdir / "answers.md").read_text(encoding="utf-8")
+    qfile = pdir / "questions.md"
+    if not qfile.is_file():
+        return None
+    text = qfile.read_text(encoding="utf-8")
+    blocks = re.split(r"^## ", text, flags=re.M)[1:]
+    out = []
+    for b in blocks:
+        head = b.splitlines()[0]
+        m = re.search(r"^answer:[ \t]*(.*)$", b, re.M)
+        if not m or not m.group(1).strip():
+            raise StopRun(
+                S.NEEDS_USER,
+                f"phase {ph.n}: unanswered question {head} in {run.rel(qfile)}",
+            )
+        out.append(f"- {head}: {m.group(1).strip()}")
+    return "\n".join(out)
 
 
 def record(run: Run, ph: S.Phase) -> None:
@@ -766,6 +917,53 @@ def _verify_inputs(run: Run, ph: S.Phase, fix_brief: Path, rnd: int) -> str:
             *_report_items(run, ph, keys),
         ],
         {"Phase base commit": f"`{ph.base}`"},
+    )
+
+
+def _brief_inputs(run: Run, ph: S.Phase, answers: str | None, findings: str) -> str:
+    items = [(k, v) for k, v in _base_items(run, ph) if k != "Phase brief"]
+    for label, rel in (
+        ("Decisions (newer wins)", "docs/decisions"),
+        ("Architecture", "docs/architecture.md"),
+        ("Outline", ".orch/plan.md"),
+    ):
+        if (run.root / rel).exists():
+            items.append((label, rel))
+    pdir = run.repo.phase_dir(ph.dirname)
+    if (pdir / "brief.md").is_file():
+        items.append(("Your current brief", run.rel(pdir / "brief.md")))
+    row = (
+        f"- phase {ph.n}: **{ph.title}**\n- deliverable: {ph.deliverable}\n"
+        f"- covers: {', '.join(ph.covers)}\n- size: {ph.size}\n"
+        f"- scenario: `{ph.scenario}` ({ph.reason or 'default'})\n"
+        f"- approach: {ph.approach}"
+    )
+    return render.inputs_md(
+        f"Inputs for the brief: phase {ph.n}, {ph.title or ph.slug}",
+        items,
+        {
+            "This phase's outline row": row,
+            "Answers to your design questions (settled with the user)": answers or "",
+            "Plan review findings to fix in this revision": findings,
+        },
+    )
+
+
+def _plan_review_inputs(run: Run, ph: S.Phase) -> str:
+    items = _base_items(run, ph)
+    for label, rel in (
+        ("Decisions (newer wins)", "docs/decisions"),
+        ("Outline", ".orch/plan.md"),
+    ):
+        if (run.root / rel).exists():
+            items.append((label, rel))
+    return render.inputs_md(
+        f"Inputs for the plan review: phase {ph.n}, {ph.title or ph.slug}",
+        items,
+        {
+            "Outline row": f"{ph.title}: {ph.deliverable}; covers "
+            + ", ".join(ph.covers)
+        },
     )
 
 

@@ -12,7 +12,9 @@ Check, and report each problem as a finding (`blocking` true/false):
    is marked *(new)*. Nothing it asks for is already built.
 2. **Functional QA dry run.** Run every check now. A check for new behaviour must
    fail today; one that already passes proves nothing (blocking). One that cannot run
-   at all must be fixed now (blocking). Record each in `qa_dry_run`.
+   at all must be fixed now (blocking). Record each in `qa_dry_run` with `result`
+   (`fails_now`, `passes_now`, `cannot_run`), `new_behaviour` (true when the check
+   is for behaviour this phase adds) and the evidence (command + output).
 3. **Faithful** to the pitch, the no-gos and the decisions.
 4. **Fits one session.**
 

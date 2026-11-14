@@ -12,7 +12,7 @@ from rich.table import Table
 from typer_agentic import agent_errors
 
 from orch import layers as L
-from orch import loop
+from orch import loop, planning
 from orch import state as S
 from orch.errors import OrchError
 from orch.repo import find_repo, init_repo
@@ -61,16 +61,52 @@ def init() -> None:
 def run(
     scenario: ScenarioOpt = None,
     sets: SetOpt = None,
+    auto_decide: Annotated[
+        bool,
+        typer.Option("--auto-decide", help="Take the recommended design options."),
+    ] = False,
+    pause: Annotated[
+        bool, typer.Option("--pause", help="Stop after planning, to read the plan.")
+    ] = False,
 ) -> None:
-    """Run (or resume) the phase loop on the run branch. Exit 0 when every phase
-    is done, 3 when stopped (re-run to resume), 75 on a usage limit."""
+    """Run (or resume) the phase loop on the run branch, planning first if there
+    is a docs/pitch.md and no run yet. Exit 0 when every phase is done (or
+    --pause stopped after the plan), 3 when stopped (fix, then re-run to resume),
+    75 on a usage limit."""
     try:
-        r = loop.start_or_resume(find_repo(), scenario=scenario, sets=sets)
-        st = loop.execute(r)
+        st = planning.run(
+            find_repo(),
+            scenario=scenario,
+            sets=sets,
+            auto_decide=auto_decide,
+            pause=pause,
+        )
     except OrchError as e:
         raise _fail(e) from None
+    _exit_with(st, ok=(S.DONE,) + ((S.RUNNING,) if pause else ()))
+
+
+@app.command()
+def plan(
+    scenario: ScenarioOpt = None,
+    sets: SetOpt = None,
+    from_n: Annotated[
+        int | None,
+        typer.Option("--from", help="Replan from phase N on; earlier phases stay."),
+    ] = None,
+) -> None:
+    """Split docs/pitch.md into an outline of phases (.orch/plan.md) and stop.
+    `orch run` then runs it."""
+    try:
+        st = planning.plan(find_repo(), scenario=scenario, sets=sets, from_n=from_n)
+    except OrchError as e:
+        raise _fail(e) from None
+    _exit_with(st, ok=(S.RUNNING,))
+
+
+def _exit_with(st: S.RunState, ok: tuple[str, ...]) -> None:
     _print_status(st)
-    if st.status == S.DONE:
+    if st.status in ok:
         return
     if st.status == S.PAUSED and st.reset_at:
         raise typer.Exit(loop.EXIT_PAUSED)

@@ -144,3 +144,67 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "learnings": LEARNINGS,
     "probe": PROBE,
 }
+
+OUTLINE_PHASE = _obj(
+    {
+        "title": STR,
+        "slug": STR,
+        "deliverable": STR,
+        "covers": STRS,
+        "depends_on": {"type": "array", "items": INT},
+        "size": {"type": "string", "enum": ["S", "M", "L"]},
+        "scenario": STR,
+        "approach": STR,
+        "reason": STR,
+        "set": STRS,  # role.key=value, each needs the reason above
+    }
+)
+OUTLINE = _obj({"phases": {"type": "array", "items": OUTLINE_PHASE}})
+
+REVIEW_FINDING = _obj(
+    {"id": STR, "blocking": {"type": "boolean"}, "title": STR, "detail": STR}
+)
+OUTLINE_REVIEW = _obj(
+    {"ok": {"type": "boolean"}, "findings": {"type": "array", "items": REVIEW_FINDING}}
+)
+
+BRIEF = _obj(
+    {
+        "questions": {
+            "type": "array",
+            "items": _obj(
+                {"id": STR, "question": STR, "options": STRS, "recommended": STR}
+            ),
+        },
+        "brief": STR,  # markdown; empty while questions wait
+        "scenario": STR,  # "" keeps the outline's choice
+        "scenario_reason": STR,
+    }
+)
+PLAN_REVIEW = _obj(
+    {
+        "ok": {"type": "boolean"},
+        "findings": {"type": "array", "items": REVIEW_FINDING},
+        "qa_dry_run": {
+            "type": "array",
+            "items": _obj(
+                {
+                    "check": STR,
+                    "result": {
+                        "type": "string",
+                        "enum": ["fails_now", "passes_now", "cannot_run"],
+                    },
+                    "new_behaviour": {"type": "boolean"},
+                    "evidence": STR,
+                }
+            ),
+        },
+    }
+)
+
+SCHEMAS |= {
+    "outline": OUTLINE,
+    "outline_review": OUTLINE_REVIEW,
+    "brief": BRIEF,
+    "plan_review": PLAN_REVIEW,
+}

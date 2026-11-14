@@ -18,8 +18,8 @@ Read `docs/pitch.md`, `docs/decisions/` (newer wins), `docs/architecture.md`,
   - a phase that changes pages uses `ui`
   - docs, config or one small module: `small`
 - `approach`: one line ("extend the existing importer, no new module")
-- `set`: optional per-role changes such as `{"dev": {"effort": "high"}}`, only with
-  a reason in `reason`
+- `set`: optional per-role changes as `role.key=value` strings, e.g.
+  `["dev.effort=high"]`, only with a reason in `reason`
 
 Respect the no-gos and the appetite. Order phases so the gate stays green after
 every one.

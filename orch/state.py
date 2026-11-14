@@ -82,6 +82,8 @@ class RunState:
     phases: list[Phase] = field(default_factory=list)
     pending: dict[str, str] | None = None  # session in flight: key, role, id
     replans: list[dict[str, Any]] = field(default_factory=list)
+    plan_sessions: list[SessionRecord] = field(default_factory=list)
+    auto_decide: bool = False
     version: int = STATE_VERSION
 
     def phase(self, n: int) -> Phase:
@@ -89,6 +91,11 @@ class RunState:
             if p.n == n:
                 return p
         raise KeyError(n)
+
+    def cost(self) -> float:
+        return sum(p.cost() for p in self.phases) + sum(
+            s.cost for s in self.plan_sessions
+        )
 
     def current(self) -> Phase | None:
         return next((p for p in self.phases if p.status != "done"), None)
@@ -101,11 +108,16 @@ def _from_dict(cls: Any, data: dict[str, Any]) -> Any:
 
 def load(path: Path) -> RunState:
     data = store.read_json(path)
+    plan_sessions = [
+        _from_dict(SessionRecord, s) for s in data.get("plan_sessions", [])
+    ]
     phases = []
     for p in data.get("phases", []):
         sessions = [_from_dict(SessionRecord, s) for s in p.get("sessions", [])]
         phases.append(_from_dict(Phase, p | {"sessions": sessions}))
-    return _from_dict(RunState, data | {"phases": phases})
+    return _from_dict(
+        RunState, data | {"phases": phases, "plan_sessions": plan_sessions}
+    )
 
 
 def save(path: Path, st: RunState) -> None:
@@ -124,7 +136,7 @@ def render_progress(st: RunState) -> str:
         f"- status: **{st.status}**"
         + (f" ({st.stop_reason})" if st.stop_reason else ""),
         f"- updated: {st.updated_at}",
-        f"- cost so far: ${sum(p.cost() for p in st.phases):.2f}",
+        f"- cost so far: ${st.cost():.2f}",
         "",
         "| # | phase | scenario | status | last step | fix rounds | cost |",
         "| --- | --- | --- | --- | --- | --- | --- |",

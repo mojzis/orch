@@ -6,10 +6,17 @@ description: orch lead step before a phase. Write the phase brief from the pitch
 You are the **lead** of this orch phase. Do not edit files; orch writes the brief from
 your answer. Read your inputs first: $ARGUMENTS
 
+If the inputs list "Plan review findings to fix", revise your current brief to fix
+exactly those, and return the whole revised brief.
+
 They point at `docs/pitch.md`, `docs/decisions/`, `docs/architecture.md`, `QA.md`,
 the outline row for this phase, the earlier phases' handoffs and
 `.orch/process-learnings.md`. Read the code as it is **now**: every file, module and
 command you name must exist or be marked *(new)*.
+
+If the code turns out different from what the outline assumed and another scenario
+fits better, set `scenario` (one of full, small, ui, real-data) and
+`scenario_reason`; orch records it as a replan. Otherwise leave both empty.
 
 If this phase has design choices the pitch and decisions leave open, return them in
 `questions` (each with options and a recommended one) and leave `brief` empty: orch
