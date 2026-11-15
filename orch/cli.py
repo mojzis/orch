@@ -12,7 +12,7 @@ from rich.table import Table
 from typer_agentic import agent_errors
 
 from orch import layers as L
-from orch import loop, planning
+from orch import loop, migrate, planning
 from orch import state as S
 from orch.errors import OrchError
 from orch.repo import find_repo, init_repo
@@ -29,6 +29,10 @@ app = typer.Typer(
 ScenarioOpt = Annotated[
     str | None,
     typer.Option("--scenario", "-s", help="Scenario to use for every phase."),
+]
+RunOpt = Annotated[
+    str | None,
+    typer.Option("--run", help="Run id (default: the current run)."),
 ]
 SetOpt = Annotated[
     list[str] | None,
@@ -100,7 +104,7 @@ def plan(
         typer.Option("--from", help="Replan from phase N on; earlier phases stay."),
     ] = None,
 ) -> None:
-    """Split docs/pitch.md into an outline of phases (.orch/plan.md) and stop.
+    """Split docs/pitch.md into an outline of phases (plan.md in the run dir) and stop.
     `orch run` then runs it."""
     try:
         st = planning.plan(find_repo(), scenario=scenario, sets=sets, from_n=from_n)
@@ -121,10 +125,10 @@ def _exit_with(st: S.RunState, ok: tuple[str, ...]) -> None:
 
 
 @app.command()
-def report() -> None:
-    """Write .orch/report.md for the run as it is now and print its path."""
+def report(run_id: RunOpt = None) -> None:
+    """Write report.md for the run as it is now and print its path."""
     try:
-        repo = find_repo()
+        repo = loop.select_run(find_repo(), run_id)
         path = loop.write_report(repo, loop.load_state(repo), None)
     except OrchError as e:
         raise _fail(e) from None
@@ -132,13 +136,36 @@ def report() -> None:
 
 
 @app.command()
-def status() -> None:
-    """Show the run's state (from .orch/state.json)."""
+def status(run_id: RunOpt = None) -> None:
+    """Show the run's state and where its files are."""
     try:
-        st = loop.load_state(find_repo())
+        repo = loop.select_run(find_repo(), run_id)
+        st = loop.load_state(repo)
     except OrchError as e:
         raise _fail(e) from None
     _print_status(st)
+    console.print(f"run files: {repo.run_dir}", markup=False)
+
+
+@app.command(name="migrate")
+def migrate_cmd() -> None:
+    """Move run files an older orch kept in the repo's .orch/ to orch's home."""
+    try:
+        repo = find_repo()
+        moves = migrate.migrate(repo)
+    except OrchError as e:
+        raise _fail(e) from None
+    if not moves:
+        console.print("nothing to migrate", markup=False)
+        return
+    for src, dst in moves:
+        console.print(f"{src.relative_to(repo.root)} -> {dst}", markup=False)
+    if not repo.in_repo:
+        console.print(
+            "commit the removal: git add -A .orch && "
+            'git commit -m "Move orch run files out of the repo"',
+            markup=False,
+        )
 
 
 def _print_status(st: S.RunState) -> None:
@@ -146,6 +173,8 @@ def _print_status(st: S.RunState) -> None:
     console.print(f"run {st.run_id} on {st.branch}: {st.status}{reason}", markup=False)
     if st.reset_at:
         console.print(f"usage limit resets at {st.reset_at}", markup=False)
+    if st.pr_url:
+        console.print(f"PR: {st.pr_url}", markup=False)
     t = Table(
         "#",
         "phase",

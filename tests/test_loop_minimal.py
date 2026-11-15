@@ -10,7 +10,7 @@ from orch import state as S
 from orch.repo import Repo
 
 from .conftest import FakeClaude, git
-from .helpers import LEARN, checker, dev, finding, make_project
+from .helpers import LEARN, checker, dev, finding, make_project, repo_home, run_dir
 
 
 def _run(repo: Path, scenario: str | None = "small") -> S.RunState:
@@ -30,21 +30,32 @@ def happy(fake_claude: FakeClaude) -> FakeClaude:
     return fake_claude
 
 
-def test_three_phases_finish_and_push(project: Path, happy: FakeClaude) -> None:
+def test_three_phases_finish_and_push_code_only(
+    project: Path, happy: FakeClaude
+) -> None:
     st = _run(project)
     assert (st.status, st.stop_reason) == (S.DONE, "")
-    remote_state = json.loads(
-        git(project, "show", f"origin/{st.branch}:.orch/state.json")
-    )
-    assert [p["status"] for p in remote_state["phases"]] == ["done"] * 3
+    pushed = git(project, "ls-tree", "-r", "--name-only", f"origin/{st.branch}")
+    run_files = [f for f in pushed.splitlines() if f.startswith(".orch/")]
+    assert (pushed.count("work.txt"), run_files) == (
+        1,
+        [
+            ".orch/config.toml",
+            ".orch/phases/01-p1/brief.md",
+            ".orch/phases/02-p2/brief.md",
+            ".orch/phases/03-p3/brief.md",
+        ],
+    ), "only code and the human's own .orch files reach the branch"
+    saved = json.loads((run_dir(project) / "state.json").read_text())
+    assert [p["status"] for p in saved["phases"]] == ["done"] * 3
 
 
 def test_phase_files_are_written(project: Path, happy: FakeClaude) -> None:
     _run(project)
-    pdir = project / ".orch" / "phases" / "02-p2"
+    pdir = run_dir(project) / "phases" / "02-p2"
     assert (pdir / "handoff.md").read_text() == "module x exists now\n"
     assert "## dev (dev)" in (pdir / "log.md").read_text()
-    lessons = (project / ".orch" / "process-learnings.md").read_text()
+    lessons = (repo_home(project) / "process-learnings.md").read_text()
     assert lessons.count("keep briefs short") == 3
 
 
@@ -65,7 +76,11 @@ def test_each_dev_session_is_fresh_and_skill_dir_is_added(
     assert len({c["session"] for c in devs}) == 3
     assert not any(c["resume"] for c in devs)
     argv = devs[0]["argv"]
-    assert argv[argv.index("--add-dir") + 1].endswith(".orch/.cache/skills")
+    dirs = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
+    home = Repo(project).home
+    assert dirs == [str(home / "cache" / "skills"), str(home)], (
+        "skills, then the run files"
+    )
 
 
 def test_gate_failing_past_cap_ends_blocked(project: Path, happy: FakeClaude) -> None:
@@ -82,7 +97,7 @@ def test_gate_repair_session_gets_gate_output(project: Path, happy: FakeClaude) 
     happy.on("orch-fix", dev("fix.txt", {"rm": "BROKEN"}))
     st = _run(project)
     assert st.status == S.DONE
-    brief = project / ".orch" / "phases" / "01-p1" / "gate-fix-dev-1.md"
+    brief = run_dir(project) / "phases" / "01-p1" / "gate-fix-dev-1.md"
     assert "`test ! -f BROKEN` exited 1" in brief.read_text()
 
 
@@ -97,7 +112,7 @@ def test_combined_fix_verdict_runs_fix_then_gate(
     happy.on("orch-fix", dev("fix.txt"))
     st = _run(project)
     assert st.status == S.DONE
-    fb = (project / ".orch" / "phases" / "01-p1" / "fix-brief-1.md").read_text()
+    fb = (run_dir(project) / "phases" / "01-p1" / "fix-brief-1.md").read_text()
     assert "### C1 (medium, from combined): broken" in fb
     assert "fix#1" in st.phases[0].done_steps
 
@@ -107,7 +122,7 @@ def test_shipped_lows_go_to_backlog(project: Path, happy: FakeClaude) -> None:
         "orch-combined", {"structured": checker("ship", finding("C1", "low", "nit"))}
     )
     _run(project)
-    assert "**C1**: nit [low]" in (project / ".orch" / "backlog.md").read_text()
+    assert "**C1**: nit [low]" in (repo_home(project) / "backlog.md").read_text()
 
 
 def test_bad_output_is_retried_once_then_failed(

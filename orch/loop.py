@@ -12,19 +12,21 @@ import tempfile
 import threading
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
 import yaml
 
-from orch import claude, gitops, render, store
+from orch import claude, gitops, pr, render, store
+from orch import home as H
 from orch import layers as L
 from orch import state as S
 from orch.errors import ConfigError, OrchError
 from orch.gate import GateResult, GateSpec, run_gate
 from orch.lead import check_add_checks, check_triage
+from orch.migrate import require_migrated
 from orch.repo import Repo
 from orch.report import render_report
 from orch.scenario import Scenario
@@ -90,7 +92,18 @@ class Run:
         return self.cli_scenario or ph.scenario
 
     def rel(self, path: Path) -> str:
-        return str(path.relative_to(self.root))
+        """How a session is told about a file: relative to the repo when it is
+        in the repo (so it resolves in a worktree too), absolute otherwise."""
+        try:
+            return str(path.relative_to(self.root))
+        except ValueError:
+            return str(path)
+
+    def add_dirs(self) -> tuple[Path, ...]:
+        """Directories outside the repo every session may read: the skills, and
+        the run files when they live in orch's home."""
+        dirs = (self.skills_dir,) if self.skills_dir else ()
+        return dirs if self.repo.in_repo else (*dirs, self.repo.home)
 
 
 # ---------------------------------------------------------------- run entry
@@ -128,12 +141,10 @@ def _sets_from_mapping(raw: Any) -> dict[str, dict[str, Any]]:
 
 
 def discover_phases(repo: Repo, scenario: str) -> list[S.Phase]:
-    """Hand-written briefs: .orch/phases/NN-slug/brief.md, in order."""
+    """Hand-written briefs: .orch/phases/NN-slug/brief.md in the repo, in order."""
     phases = []
-    for d in sorted((repo.orch / "phases").glob("[0-9][0-9]-*")):
+    for d in _hand_written(repo):
         brief = d / "brief.md"
-        if not brief.is_file():
-            continue
         n, _, slug = d.name.partition("-")
         title = next(
             (
@@ -147,45 +158,76 @@ def discover_phases(repo: Repo, scenario: str) -> list[S.Phase]:
     return phases
 
 
-def load_state(repo: Repo) -> S.RunState:
-    if not repo.state_path.is_file():
+def _hand_written(repo: Repo) -> list[Path]:
+    return [
+        d
+        for d in sorted((repo.orch / "phases").glob("[0-9][0-9]-*"))
+        if (d / "brief.md").is_file()
+    ]
+
+
+def current_run(repo: Repo) -> Repo | None:
+    """The repo with its current run selected: the run of the checked-out
+    `orch/<id>` branch, else the newest unfinished run, else the newest run."""
+    require_migrated(repo)
+    branch = gitops.current_branch(repo.root)
+    run_id = branch.removeprefix("orch/") if branch.startswith("orch/") else ""
+    if run_id and (repo.runs / run_id / "state.json").is_file():
+        return repo.with_run(run_id)
+    found = sorted(repo.runs.glob("*/state.json"), reverse=True)
+    for path in found:
+        with contextlib.suppress(ValueError, TypeError, KeyError):
+            if S.load(path).status != S.DONE:
+                return repo.with_run(path.parent.name)
+    return repo.with_run(found[0].parent.name) if found else None
+
+
+def select_run(repo: Repo, run_id: str | None = None) -> Repo:
+    """The repo with `run_id` (or the current run) selected; an error if none."""
+    if run_id:
+        require_migrated(repo)
+        if not (repo.runs / run_id / "state.json").is_file():
+            raise ConfigError(
+                f"no run {run_id} in {repo.runs}", hint="`orch status` shows the runs"
+            )
+        return repo.with_run(run_id)
+    if repo.run_id is not None:
+        return repo
+    found = current_run(repo)
+    if found is None:
         raise ConfigError("no run here yet", hint="run `orch run` to start one")
+    return found
+
+
+def load_state(repo: Repo) -> S.RunState:
+    path = select_run(repo).state_path
     try:
-        return S.load(repo.state_path)
+        return S.load(path)
     except (ValueError, TypeError, KeyError) as e:
         raise ConfigError(
-            f"{repo.state_path} is unreadable: {e}",
-            hint="restore it from git: `git checkout -- .orch/state.json`",
+            f"{path} is unreadable: {e}",
+            hint="restore it from git: `git checkout -- .orch/`"
+            if repo.in_repo
+            else "restore it from a backup of orch's home, or remove the run",
         ) from None
 
 
-def archive_run(repo: Repo) -> Path:
-    """Move a finished run's records to .orch/runs/<run-id>/ so a new run can
-    start; phase folders of that run go with it, new hand-written ones stay."""
-    st = load_state(repo)
-    dest = repo.orch / "runs" / st.run_id
-    dest.mkdir(parents=True, exist_ok=True)
-    for name in (
-        "state.json",
-        "PROGRESS.md",
-        "plan.md",
-        "report.md",
-        "full-qa.json",
-        "plan",
-    ):
-        if (repo.orch / name).exists():
-            shutil.move(repo.orch / name, dest / name)
-    for p in st.phases:
-        if (d := repo.phase_dir(p.dirname)).exists():
-            (dest / "phases").mkdir(exist_ok=True)
-            shutil.move(d, dest / "phases" / p.dirname)
-    if gitops.current_branch(repo.root) == st.branch:
-        err.print(
-            f"[yellow]warning:[/] the new run starts on top of the finished run's "
-            f"branch {st.branch}. If that run is not merged yet, its commits come "
-            "along; switch to main first to start clean."
-        )
-    return dest
+def open_run(repo: Repo) -> tuple[Repo, S.RunState | None]:
+    """The run `orch run` carries on (with its state), or the repo with no run
+    selected when the next run is a new one (no run yet, or the last one is done)."""
+    found = current_run(repo)
+    if found is None:
+        return repo, None
+    st = load_state(found)
+    if st.status == S.DONE:
+        if gitops.current_branch(repo.root) == st.branch:
+            err.print(
+                f"[yellow]warning:[/] the new run starts on top of the finished run's "
+                f"branch {st.branch}. If that run is not merged yet, its commits come "
+                "along; switch to main first to start clean."
+            )
+        return repo, None
+    return found, st
 
 
 def new_run_id(root: Path | None = None) -> str:
@@ -199,10 +241,41 @@ def new_run_id(root: Path | None = None) -> str:
     return run_id
 
 
+GITIGNORE = (".cache/", "*.lock")
+
+
 def ensure_gitignore(repo: Repo) -> None:
+    """With run files in the repo, keep the cache and lock files out of it."""
+    if not repo.in_repo:
+        return
     gi = repo.orch / ".gitignore"
-    if not gi.exists():
-        store.write_text(gi, ".cache/\n")
+    have = gi.read_text(encoding="utf-8").splitlines() if gi.is_file() else []
+    if missing := [line for line in GITIGNORE if line not in have]:
+        store.write_text(gi, "".join(f"{line}\n" for line in [*have, *missing]))
+
+
+def copy_hand_written(repo: Repo) -> None:
+    """Copy the hand-written briefs into the new run. Briefs an earlier run
+    already ran unchanged are an error: they would run twice."""
+    dirs = _hand_written(repo)
+    for d in dirs:
+        prior = _ran_before(repo, d)
+        if prior:
+            raise ConfigError(
+                f"{d.relative_to(repo.root)}/brief.md was already run in run {prior}",
+                hint="delete or edit the briefs in .orch/phases/, then `orch run`",
+            )
+    for d in dirs:
+        shutil.copytree(d, repo.phase_dir(d.name), dirs_exist_ok=True)
+
+
+def _ran_before(repo: Repo, d: Path) -> str:
+    text = (d / "brief.md").read_bytes()
+    for old in sorted(repo.runs.glob(f"*/phases/{d.name}/brief.md"), reverse=True):
+        run_dir = old.parents[2]
+        if (run_dir / "state.json").is_file() and old.read_bytes() == text:
+            return run_dir.name
+    return ""
 
 
 def start_or_resume(
@@ -212,16 +285,16 @@ def start_or_resume(
     sets: list[str] | None = None,
     phases: list[S.Phase] | None = None,
 ) -> Run:
-    """Load state.json or start a new run on a fresh `orch/<id>` branch."""
+    """Load the current run's state, or start a new run on a fresh `orch/<id>`
+    branch."""
     layers = L.Layers.for_repo(repo.root)
     pitch = read_pitch(repo.root)
     cli_sets = L.parse_sets(sets or [])
     if scenario:
         L.load_scenario(layers, scenario)  # fail early on a bad name
-    if repo.state_path.is_file() and load_state(repo).status == S.DONE:
-        archive_run(repo)  # a finished (maybe merged) run: start a new one
-    if repo.state_path.is_file():
-        st = load_state(repo)
+    repo, existing = open_run(repo)
+    if existing is not None:
+        st = existing
         if gitops.current_branch(repo.root) != st.branch:
             gitops.ensure_branch(repo.root, st.branch)
     else:
@@ -238,6 +311,9 @@ def start_or_resume(
                 hint="run `orch plan` first, or write .orch/phases/01-<slug>/brief.md",
             )
         run_id = new_run_id(repo.root)
+        repo = repo.with_run(run_id)
+        if phases is None:
+            copy_hand_written(repo)
         st = S.RunState(run_id=run_id, branch=f"orch/{run_id}", phases=found)
         gitops.ensure_branch(repo.root, st.branch)
     ensure_gitignore(repo)
@@ -293,7 +369,40 @@ def execute(run: Run) -> S.RunState:
     _commit_orch(run, f"orch: run {st.status}")
     with contextlib.suppress(OrchError):
         _push(run)
+        if st.status == S.DONE:
+            _open_pr(run)
     return st
+
+
+def _open_pr(run: Run) -> None:
+    """Open the PR of a finished, pushed run (`open_pr = true`) and put its URL
+    in the state and the report. A failure is a warning: the branch is pushed."""
+    cfg, st = run.config, run.st
+    remote = str(cfg["remote"])
+    if not (cfg.get("open_pr") and cfg.get("push")):
+        return
+    if not gitops.has_remote(run.root, remote):
+        return
+    report = (run.repo.run_dir / "report.md").read_text(encoding="utf-8")
+    try:
+        st.pr_url = pr.open_pr(
+            run.root,
+            st.branch,
+            pr.title(run.root, run.pitch, f"orch run {st.run_id}"),
+            pr.body(report, pr.fixes(run.root, remote, run.pitch)),
+        )
+    except OrchError as e:
+        err.print(f"[yellow]warning:[/] the PR was not opened: {e}", markup=True)
+        return
+    run.save()
+    write_report(run.repo, st, _full_qa(run))
+    _commit_orch(run, "orch: PR opened")
+    _push(run)
+
+
+def _full_qa(run: Run) -> dict[str, Any] | None:
+    path = run.repo.run_dir / "full-qa.json"
+    return store.read_json(path) if path.is_file() else None
 
 
 @contextlib.contextmanager
@@ -497,7 +606,7 @@ def review_qa(run: Run, ph: S.Phase, checks: list[dict[str, Any]]) -> dict[str, 
     """Review and QA in parallel, each in its own detached worktree."""
     todo = [r for r in ("review", "qa") if r not in ph.done_steps]
     if todo:
-        # the worktree is made from HEAD: inputs must be committed before it
+        # the worktree is made from HEAD: run files in the repo must be committed
         for r in todo:
             _write_inputs(run, ph, r, _checker_inputs(run, ph, r, checks))
         run.save()
@@ -761,7 +870,7 @@ def finish(run: Run) -> None:
             "returncode": proc.returncode,
             "output": (proc.stdout + proc.stderr)[-4000:],
         }
-        store.write_json(run.repo.orch / "full-qa.json", final)
+        store.write_json(run.repo.run_dir / "full-qa.json", final)
     write_report(run.repo, run.st, final)
 
 
@@ -772,8 +881,9 @@ def write_report(repo: Repo, st: S.RunState, final: dict[str, Any] | None) -> Pa
     req_ids = (
         requirement_ids(pitch.read_text(encoding="utf-8")) if pitch.is_file() else []
     )
-    path = repo.orch / "report.md"
-    store.write_text(path, render_report(repo.root, st, req_ids, final))
+    repo = select_run(repo, st.run_id)
+    path = repo.run_dir / "report.md"
+    store.write_text(path, render_report(repo, st, req_ids, final))
     return path
 
 
@@ -786,7 +896,7 @@ def record(run: Run, ph: S.Phase) -> None:
         lessons = [x for x in rep.get("process_lessons") or [] if x.strip()]
         if lessons:
             store.append_text(
-                run.repo.orch / "process-learnings.md",
+                run.repo.home / "process-learnings.md",
                 f"\n## Phase {ph.n}: {ph.title}\n\n"
                 + "".join(f"- {x}\n" for x in lessons),
             )
@@ -798,7 +908,7 @@ def record(run: Run, ph: S.Phase) -> None:
     try:
         _push(run)
     except OrchError as e:  # the next push (or `git push`) carries this phase too
-        store.append_text(run.repo.orch / "push-failures.log", f"{S.now()} {e}\n")
+        store.append_text(run.repo.run_dir / "push-failures.log", f"{S.now()} {e}\n")
 
 
 # ---------------------------------------------------------------- sessions
@@ -884,7 +994,6 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
         run.layers, L.load_scenario(run.layers, run.scenario_of(ph)), role, run.task(ph)
     )
     schema = SCHEMAS[role]
-    add_dirs = (run.skills_dir,) if run.skills_dir else ()
     attempts = 0
     retry_sid: str | None = None
     while True:
@@ -896,20 +1005,23 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
             run.st.pending[pkey] = str(sid)
         run.save()
         if cwd is None and role in ("dev", "fix"):
-            # commit orch's files (pending included) so dev's `git add -A` and the
-            # gate's clean-tree check never see them
+            # run files in the repo: commit them (pending included) so dev's
+            # `git add -A` and the gate's clean-tree check never see them
             _commit_orch(run, f"orch: phase {ph.n} before {key}")
-        r = claude.run_session(
-            res.config,
-            run.rel(inputs_path),
-            cwd or run.root,
-            schema=schema,
-            session_id=sid,
-            resume=resume,
-            prev_cost=_prev_cost(ph, key, sid, is_lead),
-            add_dirs=add_dirs,
-        )
-        _record_session(run, ph, key, role, r)
+        with _briefs_guarded(run, ph, key):
+            r = claude.run_session(
+                res.config,
+                run.rel(inputs_path),
+                cwd or run.root,
+                schema=schema,
+                session_id=sid,
+                resume=resume,
+                prev_cost=_prev_cost(ph, key, sid, is_lead),
+                add_dirs=run.add_dirs(),
+            )
+            _record_session(
+                run, ph, (key, role), r, cfg=res.config, cwd=cwd or run.root
+            )
         if is_lead and (r.ok or resume):
             ph.lead_session = r.session_id
             if "total_cost_usd" in r.raw:  # an interrupted turn reports no total
@@ -1040,12 +1152,72 @@ def session_record(key: str, role: str, r: claude.SessionResult) -> S.SessionRec
     )
 
 
-def _record_session(
-    run: Run, ph: S.Phase, key: str, role: str, r: claude.SessionResult
+def _record_session(  # noqa: PLR0913 -- the session and where it ran
+    run: Run,
+    ph: S.Phase,
+    step: tuple[str, str],
+    r: claude.SessionResult,
+    *,
+    cfg: claude.StepConfig,
+    cwd: Path,
 ) -> None:
+    rec = session_record(*step, r)
     with _LOCK:
-        ph.sessions.append(session_record(key, role, r))
+        ph.sessions.append(rec)
     run.save()
+    log_session(run, (ph.n, ph.slug), rec, r, cfg=cfg, cwd=cwd)
+
+
+def log_session(  # noqa: PLR0913 -- one line of sessions.jsonl
+    run: Run,
+    phase: tuple[int, str],
+    rec: S.SessionRecord,
+    r: claude.SessionResult,
+    *,
+    cfg: claude.StepConfig,
+    cwd: Path,
+) -> None:
+    """Append the session to sessions.jsonl, across every repo and run."""
+    row = {
+        "repo": str(run.repo.home.relative_to(run.repo.base / "repos"))
+        if run.repo.base
+        else run.root.name,
+        "run_id": run.st.run_id,
+        "branch": run.st.branch,
+        "phase": phase[0],  # 0 = planning
+        "phase_slug": phase[1],
+        **asdict(rec),
+        "model": cfg.model,
+        "effort": cfg.effort,
+        "exit": r.exit_code,
+        "duration_s": round(r.duration_s, 1),
+        "cwd": str(cwd),
+    }
+    H.append_session(run.repo.sessions_log, row)
+
+
+BRIEF_GLOBS = ("brief.md", "fix-brief-*.md", "gate-fix-*.md")
+
+
+@contextlib.contextmanager
+def _briefs_guarded(run: Run, ph: S.Phase, key: str) -> Generator[None]:
+    """Only orch and humans write a phase's briefs. Sessions can write to the run
+    dir (they read it through --add-dir), so a brief a session changed or deleted
+    is put back and the step fails, like an edit to a protected file in the repo."""
+    pdir = run.repo.phase_dir(ph.dirname)
+    before = {p: p.read_bytes() for g in BRIEF_GLOBS for p in pdir.glob(g)}
+    yield
+    edited = []
+    for path, data in before.items():
+        if not path.is_file() or path.read_bytes() != data:
+            path.write_bytes(data)
+            edited.append(run.rel(path))
+    if edited:
+        raise StopRun(
+            S.FAILED,
+            f"phase {ph.n} {key}: edited protected file {', '.join(edited)} "
+            "(only humans change it; orch put it back)",
+        )
 
 
 def _save_report(  # noqa: PLR0913 -- the fields of one log entry
@@ -1086,6 +1258,10 @@ def _safe(key: str) -> str:
 
 
 def _commit_orch(run: Run, message: str) -> None:
+    """Commit run files that live in the repo (`home = "repo"`); in orch's home
+    they are not committed, and the run branch carries code only."""
+    if not run.repo.in_repo:
+        return
     with _LOCK:
         gitops.commit_paths(run.root, [".orch"], message)
 
@@ -1105,7 +1281,7 @@ def _base_items(run: Run, ph: S.Phase) -> list[tuple[str, str]]:
     for label, p in (
         ("Pitch", run.root / "docs" / "pitch.md"),
         ("QA principles and tiers", run.root / "QA.md"),
-        ("Process learnings so far", run.repo.orch / "process-learnings.md"),
+        ("Process learnings so far", run.repo.home / "process-learnings.md"),
     ):
         if p.is_file():
             items.append((label, run.rel(p)))
@@ -1234,7 +1410,7 @@ def _brief_inputs(run: Run, ph: S.Phase, answers: str | None, findings: str) -> 
     for label, rel in (
         ("Decisions (newer wins)", "docs/decisions"),
         ("Architecture", "docs/architecture.md"),
-        ("Outline", ".orch/plan.md"),
+        ("Outline", run.rel(run.repo.run_dir / "plan.md")),
     ):
         if (run.root / rel).exists():
             items.append((label, rel))
@@ -1262,7 +1438,7 @@ def _plan_review_inputs(run: Run, ph: S.Phase) -> str:
     items = _base_items(run, ph)
     for label, rel in (
         ("Decisions (newer wins)", "docs/decisions"),
-        ("Outline", ".orch/plan.md"),
+        ("Outline", run.rel(run.repo.run_dir / "plan.md")),
     ):
         if (run.root / rel).exists():
             items.append((label, rel))
@@ -1322,6 +1498,6 @@ def _defer(
         ids for ids, _ in items
     ]  # triage re-defers the same item each round
     if text := render.backlog_entry(f"{ph.n} ({ph.title or ph.slug})", items):
-        store.append_text(run.repo.orch / "backlog.md", text)
+        store.append_text(run.repo.home / "backlog.md", text)
     ph.done_steps.append(key)
     run.save()

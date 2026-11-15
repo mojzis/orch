@@ -7,7 +7,6 @@ $ORCH_CONFIG_HOME) -> repo (.orch/) -> task (pitch frontmatter, outline row,
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import tomllib
@@ -18,6 +17,7 @@ from typing import Any
 
 from orch.claude import READ_BASH_TOOLS, SKILL_PREFIX, StepConfig
 from orch.errors import ConfigError
+from orch.home import user_config_dir
 from orch.scenario import ROLES, Scenario, validate
 
 STRONG = "opus"
@@ -80,10 +80,7 @@ class Layers:
 
     @classmethod
     def for_repo(cls, repo_root: Path) -> Layers:
-        user = Path(
-            os.environ.get("ORCH_CONFIG_HOME") or Path.home() / ".config" / "orch"
-        )
-        return cls(defaults_dir(), user, repo_root / ".orch")
+        return cls(defaults_dir(), user_config_dir(), repo_root / ".orch")
 
     def dirs(self) -> list[tuple[str, Path]]:
         return [("default", self.defaults), ("user", self.user), ("repo", self.repo)]

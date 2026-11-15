@@ -1,12 +1,15 @@
-"""Locating the project repo and orch's paths inside it."""
+"""Locating the project repo, its config (.orch/ in the repo) and its run files
+(in orch's home, see orch.home)."""
 
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
+from orch import home as H
 from orch.errors import ConfigError
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -15,6 +18,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_fix_rounds": 2,
     "remote": "origin",
     "push": True,
+    "open_pr": False,
     "test_globs": [
         "tests/**",
         "test/**",
@@ -33,14 +37,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         ".coverage",
         "node_modules/*",
     ],
-    # files a session must not change: oracles, and orch's own config and briefs
+    # files in the repo a session must not change: oracles and orch's own config
+    # (briefs live in the run dir and are checked by hash, see loop._step)
     "protected": [
         "QA.md",
         ".orch/config.toml",
         ".orch/skills/*",
         ".orch/scenarios/*",
         ".orch/phases/*/brief.md",
-        ".orch/phases/*/fix-brief-*.md",
     ],
 }
 
@@ -48,21 +52,56 @@ DEFAULT_CONFIG: dict[str, Any] = {
 @dataclass(frozen=True)
 class Repo:
     root: Path
+    run_id: str | None = None  # the run the paths below are for
 
     @property
     def orch(self) -> Path:
+        """The repo's own .orch/: config, scenarios, skills, hand-written briefs."""
         return self.root / ".orch"
 
+    @cached_property
+    def base(self) -> Path | None:
+        """orch's home, or None when the run files live in the repo."""
+        return H.orch_home()
+
     @property
-    def state_path(self) -> Path:
-        return self.orch / "state.json"
+    def in_repo(self) -> bool:
+        return self.base is None
+
+    @cached_property
+    def home(self) -> Path:
+        """This repo's files across runs: backlog, process learnings, runs/."""
+        if self.base is None:
+            return self.orch
+        return self.base / "repos" / H.repo_key(self.root, str(self.config()["remote"]))
+
+    @property
+    def sessions_log(self) -> Path:
+        return (self.base or self.orch) / "sessions.jsonl"
+
+    @property
+    def runs(self) -> Path:
+        return self.home / "runs"
 
     @property
     def cache(self) -> Path:
-        return self.orch / ".cache"
+        return self.home / (".cache" if self.in_repo else "cache")
+
+    def with_run(self, run_id: str) -> Repo:
+        return replace(self, run_id=run_id)
+
+    @property
+    def run_dir(self) -> Path:
+        if self.run_id is None:
+            raise ConfigError("no run selected")  # a bug: callers pick a run first
+        return self.runs / self.run_id
+
+    @property
+    def state_path(self) -> Path:
+        return self.run_dir / "state.json"
 
     def phase_dir(self, dirname: str) -> Path:
-        return self.orch / "phases" / dirname
+        return self.run_dir / "phases" / dirname
 
     def config(self) -> dict[str, Any]:
         p = self.orch / "config.toml"
@@ -96,6 +135,8 @@ setup_cmd = ""
 max_fix_rounds = 2
 remote = "origin"
 push = true
+# Open a PR for the run branch when the run is done (needs gh); orch never merges.
+open_pr = false
 
 # Per-role overrides, e.g.:
 # [role.dev]
@@ -110,7 +151,4 @@ def init_repo(repo: Repo) -> Path:
         raise ConfigError(f"{path} already exists", hint="edit it in place")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(CONFIG_TEMPLATE, encoding="utf-8")
-    gi = repo.orch / ".gitignore"
-    if not gi.exists():
-        gi.write_text(".cache/\n", encoding="utf-8")
     return path

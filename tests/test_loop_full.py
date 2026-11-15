@@ -12,7 +12,16 @@ from orch import state as S
 from orch.repo import Repo
 
 from .conftest import FakeClaude, git
-from .helpers import DEV_OK, LEARN, checker, dev, finding, make_project
+from .helpers import (
+    DEV_OK,
+    LEARN,
+    checker,
+    dev,
+    finding,
+    make_project,
+    repo_home,
+    run_dir,
+)
 
 
 def _run(repo: Path) -> S.RunState:
@@ -57,7 +66,7 @@ def test_both_ship_skips_triage_and_fix(project: Path, fc: FakeClaude) -> None:
     st = _run(project)
     assert st.status == S.DONE
     assert (fc.calls("orch-triage"), fc.calls("orch-fix")) == ([], [])
-    log = (project / ".orch" / "phases" / "01-p1" / "log.md").read_text()
+    log = (run_dir(project) / "phases" / "01-p1" / "log.md").read_text()
     assert ("## review (review)" in log, "## qa (qa)" in log) == (True, True)
 
 
@@ -109,7 +118,7 @@ def test_fix_then_ship(project: Path, fc: FakeClaude) -> None:
     )
     st = _run(project)
     assert (st.status, st.phases[0].fix_round) == (S.DONE, 1)
-    fb = (project / ".orch" / "phases" / "01-p1" / "fix-brief-1.md").read_text()
+    fb = (run_dir(project) / "phases" / "01-p1" / "fix-brief-1.md").read_text()
     must_part, dnf_part = fb.split("## Do NOT fix")
     assert "### R2 = Q1: same bug" in must_part, "duplicates merged"
     assert "R1" not in must_part, "do-NOT-fix stays out of the fix list"
@@ -171,8 +180,8 @@ def test_deviation_becomes_exactly_one_routed_check(
         },
     )
     _run(project)
-    qa_inputs = (project / ".orch/phases/01-p1/inputs/qa.md").read_text()
-    review_inputs = (project / ".orch/phases/01-p1/inputs/review.md").read_text()
+    qa_inputs = (run_dir(project) / "phases/01-p1/inputs/qa.md").read_text()
+    review_inputs = (run_dir(project) / "phases/01-p1/inputs/review.md").read_text()
     assert ("time 10k rows" in qa_inputs, "read store.py" in qa_inputs) == (True, False)
     assert ("read store.py" in review_inputs, "time 10k" in review_inputs) == (
         True,
@@ -210,7 +219,10 @@ def test_triage_leaving_a_finding_out_is_asked_again(
     )
     st = _run(project)
     assert (st.status, len(fc.calls("orch-triage"))) == (S.DONE, 2)
-    assert "**R2**: later (out of scope)" in (project / ".orch/backlog.md").read_text()
+    assert (
+        "**R2**: later (out of scope)"
+        in (repo_home(project) / "backlog.md").read_text()
+    )
 
 
 def test_lead_is_one_session_resumed_across_steps(

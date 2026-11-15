@@ -13,8 +13,9 @@ import re
 import signal
 import subprocess
 import threading
+import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -49,6 +50,8 @@ class SessionResult:
     usage: dict[str, Any] = field(default_factory=dict)
     reset_at: str | None = None  # ISO time a usage limit resets, when known
     raw: dict[str, Any] = field(default_factory=dict)
+    exit_code: int = 0
+    duration_s: float = 0.0
 
 
 class Runner(Protocol):
@@ -317,8 +320,9 @@ def run_session(  # noqa: PLR0913 -- one call per session, all knobs explicit
         schema=schema,
         add_dirs=add_dirs,
     )
+    started = time.monotonic()
     code, out, err = _run(argv, cwd, child_env())
-    return parse_result(
+    res = parse_result(
         code,
         out,
         err,
@@ -326,6 +330,7 @@ def run_session(  # noqa: PLR0913 -- one call per session, all knobs explicit
         want_structured=schema is not None,
         prev_cost=prev_cost,
     )
+    return replace(res, exit_code=code, duration_s=time.monotonic() - started)
 
 
 def claude_version() -> str:

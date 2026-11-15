@@ -76,14 +76,14 @@ The pitch is split once into an outline. Each phase gets its detailed brief only
 2. **Checks in code.** Every requirement id is covered, no phase depends on a later one, and the phase count and sizes are within bounds. One retry on failure.
 3. **Outline review** (fresh session, read-only). No-gos and appetite respected, decisions followed, each phase fits one session, each scenario fits its phase's risk, and the order keeps the gate green after every phase. One revision.
 
-The result is `.orch/plan.md`. There is no approval stop; `orch plan --pause` stops there when you want to read it first.
+The result is `plan.md` in the run dir (see Files). There is no approval stop; `orch plan --pause` stops there when you want to read it first.
 
 ### Before each phase: the brief
 
 The lead session (see the phase loop) writes the brief, then a separate session reviews it.
 
 1. **Open design choices.** If the phase has choices the pitch and decisions leave open, the lead asks you once, all questions in one batch, each with a recommended option. Everything else it settles itself under "settled by orch, dev may argue in deviations". While a question waits, the run is paused as `needs-user`; `--auto-decide` takes the recommended options instead.
-2. **Brief.** Written to `.orch/phases/NN-slug/brief.md`, with the sections below.
+2. **Brief.** Written to `phases/NN-slug/brief.md` in the run dir, with the sections below.
 3. **Plan review** (fresh session, can run commands, edit tools removed). Does the brief match today's code (every file, module and command it names exists or is marked new; nothing is already built)? Does the functional QA make sense: it runs every check now, a check for new behaviour must fail, one that already passes proves nothing, one that can't run is fixed now? Is it faithful to the pitch and decisions? Does it fit one session?
 4. **Revise.** The lead fixes blocking findings and the review runs again, at most two rounds. A blocking finding that survives stops the run as `needs-replan`.
 
@@ -105,15 +105,23 @@ The lead session (see the phase loop) writes the brief, then a separate session 
 
 ### Files
 
+Run files live in orch's home, not in the project repo, so the run branch (and the PR) carries code only. The home is `$ORCH_HOME`, else `home` in the user's `~/.config/orch/config.toml`, else `~/.orch`. `home = "repo"` keeps the same tree under the repo's `.orch/` and commits it on the run branch, for machines whose home directory does not last (Claude Code on the web, CI). The repo keeps only what humans write: `.orch/config.toml`, `.orch/scenarios/`, `.orch/skills/` and hand-written briefs (`.orch/phases/NN-slug/brief.md`, copied into the run when it starts).
+
 ```
-.orch/plan.md                        # outline: phases and requirement coverage
-.orch/phases/03-dedupe/brief.md      # written just before the phase
-.orch/phases/03-dedupe/log.md        # every step's JSON report, verbatim
-.orch/phases/03-dedupe/learnings.md
-.orch/process-learnings.md           # cumulative, fed to every later brief
-.orch/backlog.md                     # deferred findings
-.orch/state.json                     # orch-owned; PROGRESS.md is rendered from it
+~/.orch/sessions.jsonl                          # one line per session, every repo and run
+~/.orch/repos/<owner>/<repo>/                   # key from the remote URL (else the repo dir name)
+  process-learnings.md                          # cumulative, fed to every later brief
+  backlog.md                                    # deferred findings
+  cache/                                        # materialized skills
+  runs/<run-id>/plan.md                         # outline: phases and requirement coverage
+  runs/<run-id>/phases/03-dedupe/brief.md       # written just before the phase
+  runs/<run-id>/phases/03-dedupe/log.md         # every step's JSON report, verbatim
+  runs/<run-id>/phases/03-dedupe/learnings.md
+  runs/<run-id>/state.json                      # orch-owned; PROGRESS.md is rendered from it
+  runs/<run-id>/report.md                       # the run report
 ```
+
+The current run is the one whose `orch/<run-id>` branch is checked out, else the newest unfinished one; `orch status --run <id>` picks another. Sessions get the repo's home dir with `--add-dir` and are told about run files by absolute path, worktree sessions included. Since `--add-dir` is writable and the briefs are outside git, orch hashes a phase's briefs before each session and puts back any the session changed, failing the step (the in-repo `protected` globs still go through the gate's commit check). `orch migrate` moves run files an older orch left in `.orch/` to the home.
 
 ## The phase loop: `orch run`
 
@@ -128,7 +136,7 @@ Code runs the loop and writes all state. Worker sessions build and check. A **le
 6. **Fix** (fresh session, with the fix brief). Same report as dev.
 7. **Verify** (one fresh session doing review and QA together). Re-traces each fix end to end, judges each of the fix's deviations, and reruns only the checks whose inputs changed plus the fix-specific ones. If a must-fix remains, back to 5; after `max_fix_rounds` (default 2) the phase is `blocked`. In happytube one fix round plus verify was enough in all 8 phases, and verify always found one to three lows.
 8. **Probe** (only for phases that touch real data or paid APIs). A small real run on the final code; the lead eyeballs the output.
-9. **Record** (code and lead). orch writes every report into `log.md`, moves deferred findings to the backlog, commits and pushes the run branch. The lead writes the phase learnings, appends the process lessons to `.orch/process-learnings.md`, and writes the handoff for the next brief.
+9. **Record** (code and lead). orch writes every report into `log.md`, moves deferred findings to the backlog and pushes the run branch. The lead writes the phase learnings, appends the process lessons to `process-learnings.md`, and writes the handoff for the next brief.
 
 | Session | Fresh or resumed | Tools | Model (default) |
 | --- | --- | --- | --- |
@@ -195,7 +203,7 @@ A run ends with a branch you can review, not with a merge.
 
 - orch runs the slowest QA tier (`full`) and, if `QA.md` defines one, the diff against main.
 - It writes a run report: every requirement id with the phase that covered it and its QA evidence, the requirements left out, tokens by phase and role, fix rounds used, the plan issues raised, and every mid-run replan with what it changed in which briefs, the backlog of deferred findings, and the process lessons added during the run.
-- It leaves the branch for you. Opening a PR stays a manual step at first.
+- It leaves the branch for you. With `open_pr = true` it opens the PR with `gh` (title from the pitch, body from the run report, `Fixes #N` when the pitch names its source issue); it never merges.
 
 **When a run stops:**
 
@@ -206,7 +214,7 @@ A run ends with a branch you can review, not with a merge.
 | Usage limit | `paused`, reset time saved | Exit code 75. `orch run --wait` sleeps until the reset time from the error, then resumes |
 | Fix rounds used up | `blocked` | Run stops. You fix by hand or edit the brief, then `orch run` continues from that phase |
 | The brief can't pass plan review | `needs-replan` | Run stops. You edit the outline or the pitch, then `orch plan --from N` |
-| Machine gone (cloud session reclaimed, laptop died) | last pushed phase | On any machine: clone, check out the run branch, `orch run` continues from `state.json` |
+| Machine gone (cloud session reclaimed, laptop died) | last pushed phase | With `home = "repo"`: on any machine, clone, check out the run branch, `orch run` continues from `state.json`. With a home outside the repo the run state stays on that machine (back the home up, e.g. as a git repo) |
 | Session crash or bad output | `failed` | One retry, then stop |
 
 Resume never needs parsing: orch assigns each session id itself with `--session-id` before starting it.

@@ -6,7 +6,7 @@ code as it is at that moment, runs dev, a gate, and review ‖ QA, then triage, 
 verify, and pushes a commit.
 
 - **Code owns the loop and the state.** Every step reports structured JSON, and orch
-  writes `.orch/state.json` itself, so any stop can be resumed.
+  writes its own state file, so any stop can be resumed.
 - **A lead session makes the judgment calls**: which extra checks to run, what to fix,
   when to ship.
 - **Worker sessions do the rest**, each one fresh, so dev's work is always checked by a

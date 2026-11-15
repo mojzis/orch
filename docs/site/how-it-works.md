@@ -23,7 +23,7 @@ flowchart TD
 
 ## Outline once, brief each phase
 
-`orch plan` splits the pitch into an outline (`.orch/plan.md`): one row per phase with
+`orch plan` splits the pitch into an outline (`plan.md` in the run dir): one row per phase with
 a deliverable, the requirement ids it covers, its dependencies, a size, and a scenario.
 Code then checks that every requirement is covered and that no phase depends on a later
 one, and a read-only session reviews the outline.
@@ -64,12 +64,23 @@ models and effort can be overridden per user, per repo or per task; see
 
 ## Where things live
 
+Run files stay out of the project repo, so the run branch carries code only. They
+live in orch's home (`~/.orch`, or `$ORCH_HOME`, or `home` in
+`~/.config/orch/config.toml`):
+
 ```
-.orch/plan.md                     # outline
-.orch/phases/03-dedupe/brief.md   # written just before the phase
-.orch/phases/03-dedupe/log.md     # every step's JSON report, verbatim
-.orch/process-learnings.md        # fed to every later brief
-.orch/backlog.md                  # deferred findings
-.orch/state.json                  # orch-owned; PROGRESS.md is rendered from it
-.orch/report.md                   # the run report
+~/.orch/sessions.jsonl                       # one line per session, every repo and run
+~/.orch/repos/<owner>/<repo>/
+  process-learnings.md                       # fed to every later brief
+  backlog.md                                 # deferred findings
+  runs/<run-id>/plan.md                      # outline
+  runs/<run-id>/phases/03-dedupe/brief.md    # written just before the phase
+  runs/<run-id>/phases/03-dedupe/log.md      # every step's JSON report, verbatim
+  runs/<run-id>/state.json                   # orch-owned; PROGRESS.md is rendered from it
+  runs/<run-id>/report.md                    # the run report
 ```
+
+The repo keeps `.orch/config.toml`, `.orch/scenarios/`, `.orch/skills/` and any
+hand-written briefs. On a machine whose home does not last (Claude Code on the web,
+CI), set `home = "repo"`: the same tree goes in `.orch/runs/` and is committed on
+the run branch. `orch migrate` moves run files an older orch left in `.orch/`.

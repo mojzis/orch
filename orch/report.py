@@ -9,6 +9,7 @@ from typing import Any
 
 from orch import state as S
 from orch import store
+from orch.repo import Repo
 
 
 def _reports(pdir: Path) -> dict[str, Any]:
@@ -65,13 +66,16 @@ def _replan(r: dict[str, Any]) -> str:
 
 
 def render_report(
-    root: Path, st: S.RunState, req_ids: list[str], final_qa: dict[str, Any] | None
+    repo: Repo, st: S.RunState, req_ids: list[str], final_qa: dict[str, Any] | None
 ) -> str:
-    orch = root / ".orch"
+    run_dir = repo.run_dir
     lines = [
         f"# Run report: {st.run_id}",
         "",
-        f"- branch: `{st.branch}` (not merged; open a PR by hand)",
+        f"- branch: `{st.branch}`, PR: {st.pr_url} (not merged)"
+        if st.pr_url
+        else f"- branch: `{st.branch}` (not merged; open a PR by hand, or set "
+        "`open_pr = true`)",
         f"- status: **{st.status}**",
         f"- claude: {st.claude_version}",
         f"- total cost: ${st.cost():.2f}",
@@ -87,7 +91,7 @@ def render_report(
             lines.append(f"| {rid} | - | **left out** | - |")
             continue
         for p in phases:
-            ev = _evidence(_reports(orch / "phases" / p.dirname))
+            ev = _evidence(_reports(run_dir / "phases" / p.dirname))
             lines.append(
                 f"| {rid} | {p.n}. {p.title} | {p.status} | {_cell(_naming(ev, rid))} |"
             )
@@ -118,7 +122,7 @@ def render_report(
     lines += ["| role | tokens in | tokens out | cost |", "| --- | --- | --- | --- |"]
     for role, (ti, to, c) in sorted(by_role.items()):
         lines.append(f"| {role} | {int(ti)} | {int(to)} | ${c:.2f} |")
-    issues = _plan_issues(orch, st)
+    issues = _plan_issues(run_dir, st)
     lines += ["", "## Plan issues raised", ""] + (issues or ["(none)"])
     lines += ["", "## Replans", ""]
     lines += [_replan(r) for r in st.replans] or ["(none)"]
@@ -137,21 +141,21 @@ def render_report(
         ("Backlog (deferred findings)", "backlog.md"),
         ("Process lessons", "process-learnings.md"),
     ):
-        p = orch / name
+        p = repo.home / name
         lines += ["", f"## {title}", ""]
         lines.append(p.read_text(encoding="utf-8").strip() if p.is_file() else "(none)")
     return "\n".join(lines) + "\n"
 
 
-def _plan_issues(orch: Path, st: S.RunState) -> list[str]:
+def _plan_issues(run_dir: Path, st: S.RunState) -> list[str]:
     out = []
-    review = orch / "plan" / "reports" / "outline_review.json"
+    review = run_dir / "plan" / "reports" / "outline_review.json"
     if review.is_file():
         for f in store.read_json(review).get("findings") or []:
             out.append(f"- outline: {f['id']} {f['title']}")
     for p in st.phases:
         for f in sorted(
-            (orch / "phases" / p.dirname / "reports").glob(
+            (run_dir / "phases" / p.dirname / "reports").glob(
                 "plan_review-*-blocking.json"
             )
         ):

@@ -5,10 +5,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from orch import state as S
+from orch.repo import Repo
 from orch.report import render_report
 
 from .helpers import checker
+
+
+@pytest.fixture(autouse=True)
+def _in_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ORCH_HOME", "repo")  # no git repo to key a home dir by
+
+
+def _repo(tmp_path: Path) -> Repo:
+    return Repo(tmp_path, run_id="r")
 
 
 def _state(tmp_path: Path) -> S.RunState:
@@ -35,7 +47,7 @@ def _state(tmp_path: Path) -> S.RunState:
     qa["checks_run"] = [
         {"check": "R1: add 2 2 prints 4", "result": "pass", "evidence": "4"}
     ]
-    reports = tmp_path / ".orch" / "phases" / ph.dirname / "reports"
+    reports = _repo(tmp_path).phase_dir(ph.dirname) / "reports"
     reports.mkdir(parents=True)
     (reports / "qa.json").write_text(json.dumps(qa))
     return S.RunState(
@@ -61,19 +73,19 @@ def _state(tmp_path: Path) -> S.RunState:
 
 
 def test_evidence_is_tied_to_the_requirement_it_names(tmp_path: Path) -> None:
-    out = render_report(tmp_path, _state(tmp_path), ["R1", "R2"], None)
+    out = render_report(_repo(tmp_path), _state(tmp_path), ["R1", "R2"], None)
     assert "| R1 | 1. Add | todo | qa: R1: add 2 2 prints 4 -> pass |" in out
     assert "| R2 | 1. Add | todo | no check names R2 |" in out
 
 
 def test_tokens_by_phase_and_for_plan_sessions(tmp_path: Path) -> None:
-    out = render_report(tmp_path, _state(tmp_path), [], None)
+    out = render_report(_repo(tmp_path), _state(tmp_path), [], None)
     assert "| 1 | Add | full | todo | 0 | 1 | 1000 | 20 | $0.50 |" in out
     assert "| outline | 300 | 7 | $0.10 |" in out
 
 
 def test_replans_read_as_sentences(tmp_path: Path) -> None:
-    out = render_report(tmp_path, _state(tmp_path), [], None)
+    out = render_report(_repo(tmp_path), _state(tmp_path), [], None)
     assert "- 2026-11-14 10:00 replanned from phase 2: Old -> New" in out
     assert "--auto-decide took\n  - Q1 db?: files" in out
     assert "{" not in out.split("## Replans")[1].split("##")[0]

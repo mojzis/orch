@@ -78,3 +78,18 @@ def make_project(tmp_path: Path, phases: int = 3, config: str = "") -> Path:
     git(repo, "remote", "add", "origin", str(remote))
     git(repo, "push", "-q", "-u", "origin", "main")
     return repo
+
+
+def run_dir(project: Path) -> Path:
+    """The current run's files, in the test's orch home."""
+    from orch.loop import select_run  # noqa: PLC0415 -- conftest pins env first
+    from orch.repo import Repo  # noqa: PLC0415
+
+    return select_run(Repo(project)).run_dir
+
+
+def repo_home(project: Path) -> Path:
+    """The repo's files across runs (backlog, process learnings)."""
+    from orch.repo import Repo  # noqa: PLC0415
+
+    return Repo(project).home

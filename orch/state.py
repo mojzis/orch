@@ -88,6 +88,7 @@ class RunState:
     replans: list[dict[str, Any]] = field(default_factory=list)
     plan_sessions: list[SessionRecord] = field(default_factory=list)
     auto_decide: bool = False
+    pr_url: str = ""  # set when orch opened the run's PR (open_pr = true)
     version: int = STATE_VERSION
 
     def phase(self, n: int) -> Phase:
