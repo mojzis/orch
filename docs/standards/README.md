@@ -11,6 +11,7 @@ otherwise, use them. Read the file for the area you are about to touch:
 | [llm.md](llm.md) | calling Claude |
 | [data.md](data.md) | storing anything on disk |
 | [testing.md](testing.md) | writing tests |
+| [docs.md](docs.md) | adding a docs site |
 
 Not settled yet, so there is no standard: config loading (`.env`, env vars, settings
 classes). Follow what the repo already does.

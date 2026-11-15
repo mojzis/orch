@@ -5,6 +5,7 @@
 - `uv run poe check` — `madoqua check`: every hook check on every file (ruff incl. `S` security rules, ty, biston, zorilla), plus full tests and a non-blocking vuln scan
 - `uv run poe fix` — auto-format and fix lint issues
 - `uv run poe test` — run tests only
+- `uv run poe docs` / `uv run poe docs-build` — serve / build the Zensical docs site (`zensical.toml`, pages in `docs/site/`, `docs/site/reference/` generated from `orch guide`; deployed to GitHub Pages by `.github/workflows/docs.yml`)
 - `uv run poe check-all` — run all checks including dead-code, single-use abstractions (dermestes) and unused-deps
 
 ## Stack
