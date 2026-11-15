@@ -78,3 +78,6 @@ All six phases were built in session 1. Remaining work:
   web/CI). One central `sessions.jsonl`; the run branch carries code commits only;
   briefs are guarded by hash instead of the gate's commit check; `orch migrate`;
   `status`/`report --run`. Asked for after gerenuk#33 carried 37 `.orch` files.
+- 2026-11-15: `open_pr` (default false): a done, pushed run opens its PR with `gh`
+  (title from the pitch, body from the report, `Fixes #N` from `issue:` or a `Source:`
+  issue link); an existing open PR is reused; a gh failure is a warning.

@@ -173,6 +173,8 @@ def _print_status(st: S.RunState) -> None:
     console.print(f"run {st.run_id} on {st.branch}: {st.status}{reason}", markup=False)
     if st.reset_at:
         console.print(f"usage limit resets at {st.reset_at}", markup=False)
+    if st.pr_url:
+        console.print(f"PR: {st.pr_url}", markup=False)
     t = Table(
         "#",
         "phase",

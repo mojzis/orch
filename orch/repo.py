@@ -18,6 +18,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_fix_rounds": 2,
     "remote": "origin",
     "push": True,
+    "open_pr": False,
     "test_globs": [
         "tests/**",
         "test/**",
@@ -134,6 +135,8 @@ setup_cmd = ""
 max_fix_rounds = 2
 remote = "origin"
 push = true
+# Open a PR for the run branch when the run is done (needs gh); orch never merges.
+open_pr = false
 
 # Per-role overrides, e.g.:
 # [role.dev]

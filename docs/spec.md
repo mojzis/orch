@@ -203,7 +203,7 @@ A run ends with a branch you can review, not with a merge.
 
 - orch runs the slowest QA tier (`full`) and, if `QA.md` defines one, the diff against main.
 - It writes a run report: every requirement id with the phase that covered it and its QA evidence, the requirements left out, tokens by phase and role, fix rounds used, the plan issues raised, and every mid-run replan with what it changed in which briefs, the backlog of deferred findings, and the process lessons added during the run.
-- It leaves the branch for you. Opening a PR stays a manual step at first.
+- It leaves the branch for you. With `open_pr = true` it opens the PR with `gh` (title from the pitch, body from the run report, `Fixes #N` when the pitch names its source issue); it never merges.
 
 **When a run stops:**
 

@@ -72,7 +72,10 @@ def render_report(
     lines = [
         f"# Run report: {st.run_id}",
         "",
-        f"- branch: `{st.branch}` (not merged; open a PR by hand)",
+        f"- branch: `{st.branch}`, PR: {st.pr_url} (not merged)"
+        if st.pr_url
+        else f"- branch: `{st.branch}` (not merged; open a PR by hand, or set "
+        "`open_pr = true`)",
         f"- status: **{st.status}**",
         f"- claude: {st.claude_version}",
         f"- total cost: ${st.cost():.2f}",

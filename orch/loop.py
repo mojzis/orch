@@ -19,7 +19,7 @@ from typing import Any, NoReturn
 
 import yaml
 
-from orch import claude, gitops, render, store
+from orch import claude, gitops, pr, render, store
 from orch import home as H
 from orch import layers as L
 from orch import state as S
@@ -369,7 +369,40 @@ def execute(run: Run) -> S.RunState:
     _commit_orch(run, f"orch: run {st.status}")
     with contextlib.suppress(OrchError):
         _push(run)
+        if st.status == S.DONE:
+            _open_pr(run)
     return st
+
+
+def _open_pr(run: Run) -> None:
+    """Open the PR of a finished, pushed run (`open_pr = true`) and put its URL
+    in the state and the report. A failure is a warning: the branch is pushed."""
+    cfg, st = run.config, run.st
+    remote = str(cfg["remote"])
+    if not (cfg.get("open_pr") and cfg.get("push")):
+        return
+    if not gitops.has_remote(run.root, remote):
+        return
+    report = (run.repo.run_dir / "report.md").read_text(encoding="utf-8")
+    try:
+        st.pr_url = pr.open_pr(
+            run.root,
+            st.branch,
+            pr.title(run.root, run.pitch, f"orch run {st.run_id}"),
+            pr.body(report, pr.fixes(run.root, remote, run.pitch)),
+        )
+    except OrchError as e:
+        err.print(f"[yellow]warning:[/] the PR was not opened: {e}", markup=True)
+        return
+    run.save()
+    write_report(run.repo, st, _full_qa(run))
+    _commit_orch(run, "orch: PR opened")
+    _push(run)
+
+
+def _full_qa(run: Run) -> dict[str, Any] | None:
+    path = run.repo.run_dir / "full-qa.json"
+    return store.read_json(path) if path.is_file() else None
 
 
 @contextlib.contextmanager
