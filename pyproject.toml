@@ -39,6 +39,7 @@ dev = [
     "deptry",
     "interrogate",
     "poethepoet",
+    "zensical>=0.1.1",
 ]
 
 [tool.ruff]
@@ -168,6 +169,24 @@ sequence = [
 ]
 ignore_fail = true
 help = "Run all checks (report all failures)"
+
+[tool.poe.tasks.docs-ref]
+shell = """
+mkdir -p docs/site/reference
+for t in setup use tune; do
+  orch guide "$t" | sed '/^orch is not wired into this repo yet/d' > "docs/site/reference/$t.md"
+done
+"""
+interpreter = "bash"
+help = "Generate the docs reference pages from `orch guide`"
+
+[tool.poe.tasks.docs]
+sequence = [{ ref = "docs-ref" }, { cmd = "zensical serve" }]
+help = "Serve the docs site locally with live reload"
+
+[tool.poe.tasks.docs-build]
+sequence = [{ ref = "docs-ref" }, { cmd = "zensical build --clean" }]
+help = "Build the docs site into site/"
 
 [tool.poe.tasks.setup]
 cmd = "madoqua install"

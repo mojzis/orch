@@ -19,5 +19,5 @@ orch status              # or read .orch/PROGRESS.md
 ```
 
 Everything orch writes lives in `.orch/` on an `orch/<run-id>` branch; it never
-touches main and never merges. See [docs/spec.md](docs/spec.md) for the design and
+touches main and never merges. Docs: <https://mojzis.github.io/orch/>. See [docs/spec.md](docs/spec.md) for the design and
 [docs/plan.md](docs/plan.md) for build status.
