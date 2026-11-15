@@ -3,6 +3,15 @@ name = "orch"
 version = "0.1.0"
 description = "orch"
 requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+    "typer>=0.29.1",
+    "typer-agentic>=0.1.8",
+]
+
+[project.scripts]
+orch = "orch.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -38,9 +47,12 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "S", "SIM", "C4", "DTZ", "T20", "PTH", "ERA", "PL", "TRY", "RUF"]
+# OrchError subclasses carry a message and a hint by design (docs/standards/code.md)
+ignore = ["TRY003"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106", "PLR2004"]
+"tests/**" = ["S101", "S105", "S106", "PLR2004", "S603", "S607"]
+"tests/fake_claude.py" = ["T201", "S603", "S607"]
 
 [tool.ruff.format]
 
@@ -48,7 +60,8 @@ select = ["E", "F", "W", "I", "UP", "B", "S", "SIM", "C4", "DTZ", "T20", "PTH", 
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=orch --cov-report=term-missing"
+addopts = "--cov=orch --cov-report=term-missing -m 'not integration'"
+markers = ["integration: needs a real claude and network"]
 
 [tool.coverage.run]
 source = ["orch"]
@@ -80,6 +93,10 @@ extend_check = [
     { name = "pytest", cmd = "pytest -q --tb=short", pass_files = false, when = "full", max_output_lines = 120 },
     { name = "pysentry", cmd = "uvx pysentry-rs .", pass_files = false, when = "full", blocking = false },
 ]
+
+[tool.zorilla.rules.ZR005]
+# slash-command prompts handed to claude, not paths
+allowed_prefixes = ["/orch-"]
 
 [tool.dermestes]
 

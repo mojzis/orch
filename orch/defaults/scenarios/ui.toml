@@ -1,0 +1,5 @@
+description = "Phases that change pages: full, with QA driving a browser at desktop and phone width."
+extends = "full"
+
+[role.qa]
+extra = "This phase changes pages. Drive a browser and check every page you touch at desktop (1280px) and phone (390px) width."

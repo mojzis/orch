@@ -1,0 +1,3 @@
+description = "Phases that touch real data or paid APIs: full, plus a small real probe run before record."
+extends = "full"
+add_steps = { verify = ["probe"] }

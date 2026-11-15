@@ -92,3 +92,11 @@ published minutes ago.
 - ty-find's index goes stale after the hook's `ruff format` rewrites a file. The tell is
   `tyf refs <sym>` listing only the definition, or gerenuk reporting `selected` with an
   empty list. `uv run tyf daemon restart` fixes it.
+
+## orch itself
+
+- Design: `docs/spec.md`; build status and session log: `docs/plan.md`; handoff for
+  the next session: `docs/next-session.md`.
+- Run `uv run orch guide` before using the CLI. Tests use the fake claude in
+  `tests/fake_claude.py`; `uv run pytest -m integration -o addopts=` runs the live
+  smoke test against the real `claude` (costs cents).
