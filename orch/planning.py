@@ -1,8 +1,8 @@
 """`orch plan`: split the pitch into an outline of phases, once.
 
 Outline (fresh session) -> checks in code (one retry) -> outline review (fresh,
-read-only) -> one revision. The result is .orch/plan.md and the phases in
-state.json."""
+read-only) -> one revision. The result is plan.md in the run dir and the phases
+in state.json."""
 
 from __future__ import annotations
 
@@ -20,12 +20,14 @@ from orch.loop import (
     INTERRUPTED,
     Run,
     StopRun,
-    archive_run,
+    current_run,
     discover_phases,
     ensure_gitignore,
     execute,
     load_state,
+    log_session,
     new_run_id,
+    open_run,
     read_pitch,
     session_record,
     sigint_forwarding,
@@ -112,26 +114,7 @@ def plan(
     pitch = read_pitch(repo.root)
     default_sc = scenario or pitch.get("scenario") or "full"
     L.load_scenario(layers, default_sc)
-    if from_n is None:
-        if repo.state_path.is_file():
-            raise ConfigError(
-                "a run already exists here",
-                hint="`orch run` to continue it, or `orch plan --from N` to replan",
-            )
-        if not gitops.is_clean(repo.root, exclude_orch=True):
-            raise ConfigError(
-                "the working tree has uncommitted changes",
-                hint="commit or stash them; orch starts a run branch from HEAD",
-            )
-        run_id = new_run_id(repo.root)
-        st = S.RunState(run_id=run_id, branch=f"orch/{run_id}")
-    else:
-        st = load_state(repo)
-        if not 1 <= from_n <= len(st.phases) + 1:
-            raise ConfigError(
-                f"--from {from_n}: the run has {len(st.phases)} phases",
-                hint=f"use 1 to {len(st.phases) + 1}",
-            )
+    repo, st = _plan_target(repo, from_n)
     gitops.ensure_branch(repo.root, st.branch)
     ensure_gitignore(repo)
     run = Run(
@@ -182,10 +165,43 @@ def plan(
             }
         )
     st.status, st.stop_reason, st.reset_at, st.stop_kind = S.RUNNING, "", None, ""
-    store.write_text(repo.orch / "plan.md", render_plan(st, req_ids))
+    store.write_text(repo.run_dir / "plan.md", render_plan(st, req_ids))
     run.save()
-    gitops.commit_paths(repo.root, [".orch"], f"orch: plan ({len(st.phases)} phases)")
+    if repo.in_repo:
+        gitops.commit_paths(
+            repo.root, [".orch"], f"orch: plan ({len(st.phases)} phases)"
+        )
     return st
+
+
+def _plan_target(repo: Repo, from_n: int | None) -> tuple[Repo, S.RunState]:
+    """A new run to plan, or with --from the current run to replan."""
+    if from_n is None:
+        _found, existing = open_run(repo)
+        if existing is not None:
+            raise ConfigError(
+                "a run already exists here",
+                hint="`orch run` to continue it, or `orch plan --from N` to replan",
+            )
+        if not gitops.is_clean(repo.root, exclude_orch=True):
+            raise ConfigError(
+                "the working tree has uncommitted changes",
+                hint="commit or stash them; orch starts a run branch from HEAD",
+            )
+        run_id = new_run_id(repo.root)
+        repo = repo.with_run(run_id)
+        st = S.RunState(run_id=run_id, branch=f"orch/{run_id}")
+    else:
+        current = current_run(repo)  # a finished run can be replanned too
+        if current is None:
+            raise ConfigError("no run to replan", hint="`orch plan` without --from")
+        repo, st = current, load_state(current)
+        if not 1 <= from_n <= len(st.phases) + 1:
+            raise ConfigError(
+                f"--from {from_n}: the run has {len(st.phases)} phases",
+                hint=f"use 1 to {len(st.phases) + 1}",
+            )
+    return repo, st
 
 
 def _drop_replaced(repo: Repo, st: S.RunState, first_n: int) -> list[str]:
@@ -196,7 +212,7 @@ def _drop_replaced(repo: Repo, st: S.RunState, first_n: int) -> list[str]:
         st.plan_sessions += p.sessions
         if (d := repo.phase_dir(p.dirname)).exists():
             stamp = S.now().replace(":", "")
-            shutil.move(d, repo.orch / "replaced" / f"{stamp}-{p.dirname}")
+            shutil.move(d, repo.run_dir / "replaced" / f"{stamp}-{p.dirname}")
     st.pending = {
         k: v for k, v in st.pending.items() if int(k.partition(":")[0]) < first_n
     }
@@ -248,12 +264,13 @@ def _outline(  # noqa: PLR0913 -- what the outline is checked against
             raise StopRun(
                 S.NEEDS_REPLAN, "outline failed its checks: " + "; ".join(problems)
             )
-    store.write_text(run.repo.orch / "plan.md", render_outline_draft(outline))
+    plan_md = run.repo.run_dir / "plan.md"
+    store.write_text(plan_md, render_outline_draft(outline))
     review = _session(
         run,
         "outline_review",
         "outline_review",
-        context + "\n## The outline to review\n\nSee `.orch/plan.md` (draft).\n",
+        context + f"\n## The outline to review\n\nSee `{run.rel(plan_md)}` (draft).\n",
     )
     blocking = [f for f in review.get("findings") or [] if f.get("blocking")]
     if blocking or not review.get("ok", False):
@@ -265,7 +282,7 @@ def _outline(  # noqa: PLR0913 -- what the outline is checked against
             context
             + "\n## Outline review findings to address\n\n"
             + (notes or "- the review did not approve the outline")
-            + "\n\nYour previous outline is in `.orch/plan.md` (draft).\n",
+            + f"\n\nYour previous outline is in `{run.rel(plan_md)}` (draft).\n",
         )
         if problems := checks(outline):
             raise StopRun(
@@ -294,14 +311,14 @@ def _context(  # noqa: PLR0913 -- everything the outline session needs to know
 ) -> str:
     root = run.root
     items = [("Pitch", "docs/pitch.md")]
-    for label, rel in (
-        ("Decisions (newer wins)", "docs/decisions"),
-        ("Architecture", "docs/architecture.md"),
-        ("QA principles and tiers", "QA.md"),
-        ("Process learnings", ".orch/process-learnings.md"),
+    for label, path in (
+        ("Decisions (newer wins)", root / "docs/decisions"),
+        ("Architecture", root / "docs/architecture.md"),
+        ("QA principles and tiers", root / "QA.md"),
+        ("Process learnings", run.repo.home / "process-learnings.md"),
     ):
-        if (root / rel).exists():
-            items.append((label, rel))
+        if path.exists():
+            items.append((label, run.rel(path)))
     sc_lines = []
     for name in scenarios:
         sc = L.load_scenario(run.layers, name)
@@ -326,7 +343,7 @@ def _context(  # noqa: PLR0913 -- everything the outline session needs to know
 
 
 def _session(run: Run, key: str, role: str, inputs: str) -> dict[str, Any]:
-    pdir = run.repo.orch / "plan"
+    pdir = run.repo.run_dir / "plan"
     inputs_path = pdir / "inputs" / f"{key.replace('#', '-')}.md"
     store.write_text(inputs_path, inputs)
     sc = L.load_scenario(
@@ -344,10 +361,12 @@ def _session(run: Run, key: str, role: str, inputs: str) -> dict[str, Any]:
             run.rel(inputs_path),
             run.root,
             schema=SCHEMAS[role],
-            add_dirs=(run.skills_dir,) if run.skills_dir else (),
+            add_dirs=run.add_dirs(),
         )
-        run.st.plan_sessions.append(session_record(key, role, r))
+        rec = session_record(key, role, r)
+        run.st.plan_sessions.append(rec)
         run.save()
+        log_session(run, (0, "planning"), rec, r, cfg=res.config, cwd=run.root)
         if INTERRUPTED.is_set():
             raise StopRun(S.PAUSED, f"interrupted during {key}", kind="interrupted")
         if r.ok and r.structured is not None:
@@ -432,8 +451,6 @@ def run(  # noqa: PLR0913 -- the options of `orch run`
     """`orch run`: plan first when there is a pitch but no run and no hand-written
     briefs, then run (or resume) every phase. With `wait`, a usage limit sleeps
     until the reset time and carries on."""
-    if repo.state_path.is_file() and load_state(repo).status == S.DONE:
-        archive_run(repo)
     has_pitch = (repo.root / "docs" / "pitch.md").is_file()
     while True:
         st = _run_once(repo, scenario, sets, auto_decide, pause, has_pitch=has_pitch)
@@ -451,7 +468,7 @@ def _run_once(  # noqa: PLR0913 -- the options of `orch run`
     *,
     has_pitch: bool,
 ) -> S.RunState:
-    existing = load_state(repo) if repo.state_path.is_file() else None
+    _found, existing = open_run(repo)
     if existing is None and has_pitch and not discover_phases(repo, "full"):
         st = plan(repo, scenario=scenario, sets=sets)
         if st.status != S.RUNNING or pause:

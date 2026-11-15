@@ -11,7 +11,7 @@ exactly those, and return the whole revised brief.
 
 They point at `docs/pitch.md`, `docs/decisions/`, `docs/architecture.md`, `QA.md`,
 the outline row for this phase, the earlier phases' handoffs and
-`.orch/process-learnings.md`. Read the code as it is **now**: every file, module and
+the process learnings. Read the code as it is **now**: every file, module and
 command you name must exist or be marked *(new)*.
 
 If the code turns out different from what the outline assumed and another scenario

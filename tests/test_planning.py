@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ from orch import state as S
 from orch.repo import Repo
 
 from .conftest import FakeClaude, git
-from .helpers import LEARN, checker, dev
+from .helpers import LEARN, checker, dev, run_dir
 
 PITCH = """---
 title: toy
@@ -100,15 +101,28 @@ def test_requirement_ids_in_order() -> None:
 def test_plan_writes_outline_and_phases(project: Path, fc: FakeClaude) -> None:
     st = planning.plan(Repo(project))
     assert (st.status, [p.slug for p in st.phases]) == (S.RUNNING, ["add", "cli"])
-    plan_md = (project / ".orch" / "plan.md").read_text()
+    plan_md = (run_dir(project) / "plan.md").read_text()
     assert "- R2: phase 2" in plan_md
     assert git(project, "rev-parse", "--abbrev-ref", "HEAD") == st.branch
+
+
+def test_planning_sessions_are_logged_as_phase_0(
+    project: Path, fc: FakeClaude, tmp_path: Path
+) -> None:
+    planning.plan(Repo(project))
+    log = (tmp_path / "orch-home" / "sessions.jsonl").read_text().splitlines()
+    rows = [json.loads(line) for line in log]
+    assert [(r["phase"], r["phase_slug"], r["role"]) for r in rows] == [
+        (0, "planning", "outline"),
+        (0, "planning", "outline_review"),
+    ]
+    assert rows[0]["repo"] == "project", "no remote: the repo's directory name"
 
 
 def test_uncovered_requirement_is_retried_once(project: Path, fc: FakeClaude) -> None:
     fc.on("orch-outline", {"structured": {"phases": [row("Add", ["R1"])]}}, GOOD)
     st = planning.plan(Repo(project))
-    retry = (project / ".orch/plan/inputs/outline-retry.md").read_text()
+    retry = (run_dir(project) / "plan/inputs/outline-retry.md").read_text()
     assert (len(st.phases), "not covered by any phase: R2" in retry) == (2, True)
 
 
@@ -177,7 +191,7 @@ def test_outline_review_blocking_finding_gets_one_revision(
         },
     )
     st = planning.plan(Repo(project))
-    rev = (project / ".orch/plan/inputs/outline-revision.md").read_text()
+    rev = (run_dir(project) / "plan/inputs/outline-revision.md").read_text()
     assert ("paid API without real-data" in rev, st.phases[0].scenario) == (
         True,
         "real-data",
@@ -187,7 +201,7 @@ def test_outline_review_blocking_finding_gets_one_revision(
 def test_run_plans_then_briefs_then_runs(project: Path, fc: FakeClaude) -> None:
     st = planning.run(Repo(project))
     assert (st.status, [p.status for p in st.phases]) == (S.DONE, ["done", "done"])
-    brief = (project / ".orch/phases/01-add/brief.md").read_text()
+    brief = (run_dir(project) / "phases/01-add/brief.md").read_text()
     assert brief.startswith("# Add\n\n## Goal")
 
 
@@ -215,7 +229,7 @@ def test_qa_check_that_already_passes_is_blocking(
     }
     fc.on("orch-plan-review", passes, passes, PR_OK)
     st = planning.run(Repo(project))
-    rev = (project / ".orch/phases/01-add/inputs/brief_rev-1.md").read_text()
+    rev = (run_dir(project) / "phases/01-add/inputs/brief_rev-1.md").read_text()
     assert (st.status, "already passes" in rev) == (S.DONE, True)
 
 
@@ -230,7 +244,7 @@ def test_brief_naming_missing_file_is_blocking(project: Path, fc: FakeClaude) ->
     }
     fc.on("orch-brief", bad, BRIEF)
     planning.run(Repo(project))
-    rev = (project / ".orch/phases/01-add/inputs/brief_rev-1.md").read_text()
+    rev = (run_dir(project) / "phases/01-add/inputs/brief_rev-1.md").read_text()
     assert "`orch/importer.py`, which does not exist" in rev
 
 
@@ -278,18 +292,18 @@ QUESTION = {
 def test_design_question_pauses_as_needs_user(project: Path, fc: FakeClaude) -> None:
     fc.on("orch-brief", QUESTION, BRIEF)
     st = planning.run(Repo(project))
-    qfile = project / ".orch/phases/01-add/questions.md"
+    qfile = run_dir(project) / "phases/01-add/questions.md"
     assert (st.status, "files or sqlite?" in qfile.read_text()) == (S.NEEDS_USER, True)
     qfile.write_text(qfile.read_text().replace("answer: ", "answer: sqlite"))
     st = planning.run(Repo(project))
-    answered = (project / ".orch/phases/01-add/inputs/brief-answered.md").read_text()
+    answered = (run_dir(project) / "phases/01-add/inputs/brief-answered.md").read_text()
     assert (st.status, "files or sqlite?: sqlite" in answered) == (S.DONE, True)
 
 
 def test_auto_decide_takes_recommended(project: Path, fc: FakeClaude) -> None:
     fc.on("orch-brief", QUESTION, BRIEF)
     st = planning.run(Repo(project), auto_decide=True)
-    answers = (project / ".orch/phases/01-add/inputs/brief-answered.md").read_text()
+    answers = (run_dir(project) / "phases/01-add/inputs/brief-answered.md").read_text()
     assert (st.status, "files (recommended option" in answers) == (S.DONE, True)
     assert any(r.get("kind") == "auto-decide" for r in st.replans)
 

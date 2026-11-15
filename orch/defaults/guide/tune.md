@@ -46,8 +46,16 @@ review_combined, record last, steps in canonical order.
 - `setup_cmd`: run in each fresh review/QA worktree
 - `full_qa_cmd`: the slowest QA tier, run once after the last phase
 - `max_fix_rounds` (2), `remote` ("origin"), `push` (true)
-- `test_globs`, `protected`: what the gate treats as tests and as files a session
-  must not change (QA.md, orch's config, briefs and templates)
+- `test_globs`, `protected`: what the gate treats as tests and as files in the repo
+  a session must not change (QA.md, orch's config, templates, hand-written briefs);
+  briefs in the run dir are always protected
+
+## Where run files live (user config.toml or env)
+
+- `$ORCH_HOME`, else `home` in `~/.config/orch/config.toml`, else `~/.orch`
+- `home = "repo"`: in the repo's `.orch/runs/`, committed on the run branch (Claude
+  Code on the web, CI)
+- `<home>/sessions.jsonl`: one line per session orch started, every repo and run
 
 ## Exit codes of `orch run`
 

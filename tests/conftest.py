@@ -24,6 +24,7 @@ FAKE = Path(__file__).with_name("fake_claude.py")
 def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No test touches the real user config, a real claude or the real repo."""
     monkeypatch.setenv("ORCH_CONFIG_HOME", str(tmp_path / "user-config"))
+    monkeypatch.setenv("ORCH_HOME", str(tmp_path / "orch-home"))
     monkeypatch.setenv("_TYPER_FORCE_DISABLE_TERMINAL", "1")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.setenv("GIT_AUTHOR_NAME", "t")

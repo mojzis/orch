@@ -4,7 +4,7 @@ description: orch outline. Split a shaped pitch into phases, each with a scenari
 ---
 
 You split a shaped pitch into an outline of phases. You cannot edit files; orch writes
-`.orch/plan.md` from your answer. Read your inputs first: $ARGUMENTS
+the plan from your answer. Read your inputs first: $ARGUMENTS
 
 Read `docs/pitch.md`, `docs/decisions/` (newer wins), `docs/architecture.md`,
 `QA.md` and the code. Then return one row per phase:

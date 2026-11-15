@@ -20,7 +20,7 @@ from orch.repo import Repo
 
 from . import test_planning as tp
 from .conftest import FakeClaude, git
-from .helpers import LEARN, checker, dev, make_project
+from .helpers import LEARN, checker, dev, make_project, run_dir
 from .test_planning import BRIEF, GOOD, QUESTION, row
 from .test_stops import USAGE
 
@@ -105,7 +105,7 @@ def test_auto_decide_does_not_outlive_its_invocation(
 def test_answer_on_the_next_line_is_read(project: Path, fc: FakeClaude) -> None:
     fc.on("orch-brief", QUESTION, BRIEF)
     planning.run(Repo(project))
-    q = project / ".orch/phases/01-add/questions.md"
+    q = run_dir(project) / "phases/01-add/questions.md"
     q.write_text(q.read_text().replace("answer: ", "answer:\nsqlite, because x\n"))
     st = planning.run(Repo(project))
     assert st.status == S.DONE, st.stop_reason
@@ -114,19 +114,19 @@ def test_answer_on_the_next_line_is_read(project: Path, fc: FakeClaude) -> None:
 def test_multi_line_answer_is_kept_whole(project: Path, fc: FakeClaude) -> None:
     fc.on("orch-brief", QUESTION, BRIEF)
     planning.run(Repo(project))
-    q = project / ".orch/phases/01-add/questions.md"
+    q = run_dir(project) / "phases/01-add/questions.md"
     q.write_text(
         q.read_text().replace("answer: ", "answer: sqlite\nbut only for the cache\n")
     )
     planning.run(Repo(project))
-    answered = (project / ".orch/phases/01-add/inputs/brief-answered.md").read_text()
+    answered = (run_dir(project) / "phases/01-add/inputs/brief-answered.md").read_text()
     assert "only for the cache" in answered
 
 
 def test_extra_heading_in_questions_md(project: Path, fc: FakeClaude) -> None:
     fc.on("orch-brief", QUESTION, BRIEF)
     planning.run(Repo(project))
-    q = project / ".orch/phases/01-add/questions.md"
+    q = run_dir(project) / "phases/01-add/questions.md"
     q.write_text(
         q.read_text().replace("answer: ", "answer: sqlite") + "\n## My notes\n\nhm\n"
     )
@@ -139,11 +139,11 @@ def test_lead_reasking_after_answers_is_not_a_permanent_failure(
 ) -> None:
     fc.on("orch-brief", QUESTION, QUESTION, BRIEF)
     planning.run(Repo(project))
-    q = project / ".orch/phases/01-add/questions.md"
+    q = run_dir(project) / "phases/01-add/questions.md"
     q.write_text(q.read_text().replace("answer: ", "answer: sqlite"))
     st = planning.run(Repo(project))
     assert st.status == S.NEEDS_USER  # the lead asked again: a second round
-    q2 = project / ".orch/phases/01-add/questions-2.md"
+    q2 = run_dir(project) / "phases/01-add/questions-2.md"
     q2.write_text(q2.read_text().replace("answer: ", "answer: files"))
     st = planning.run(Repo(project))
     assert st.status == S.DONE, (st.status, st.stop_reason)
@@ -215,7 +215,7 @@ def test_report_says_done(tmp_path: Path, fake_claude: FakeClaude) -> None:
     repo = make_project(tmp_path, phases=1)
     _stops_fc(fake_claude).on("orch-combined", {"structured": checker()})
     planning.run(Repo(repo), scenario="small")
-    report = (repo / ".orch" / "report.md").read_text()
+    report = (run_dir(repo) / "report.md").read_text()
     assert "status: **done**" in report, report[:300]
 
 
@@ -261,7 +261,7 @@ def test_push_failure_does_not_lose_next_phase_base(
         S.DONE,
         [True, True],
     ), "a failed push must not fail the run or skip a phase's base"
-    assert (repo / ".orch" / "push-failures.log").is_file()
+    assert (run_dir(repo) / "push-failures.log").is_file()
 
 
 # ---------------------------------------------------------------- SIGINT
@@ -345,5 +345,5 @@ def test_cli_scenario_override_is_not_permanent(project: Path, fc: FakeClaude) -
     fc.on("orch-dev", dev("work.txt"), USAGE, dev("w.txt"))
     st = planning.run(Repo(project), scenario="small")  # this run only
     assert st.status == S.PAUSED
-    st = S.load(Repo(project).state_path)
+    st = S.load(run_dir(project) / "state.json")
     assert st.phases[1].scenario == "full", "planner's choice lost after one -s run"

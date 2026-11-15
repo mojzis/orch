@@ -45,10 +45,10 @@ Pick one:
 ```bash
 orch config        # what every step will run, and which layer it came from
 orch run           # plans first if there is a pitch, then runs every phase
-orch status        # or read .orch/PROGRESS.md
+orch status        # also prints where the run's files are
 ```
 
-`orch run --pause` stops after the plan so you can read `.orch/plan.md` before any
+`orch run --pause` stops after the plan so you can read the plan (`plan.md`, in the run dir `orch status` prints) before any
 code is written.
 
 !!! tip "Stopped?"

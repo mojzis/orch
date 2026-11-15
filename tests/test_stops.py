@@ -16,10 +16,20 @@ from typer.testing import CliRunner
 from orch import planning
 from orch import state as S
 from orch.cli import app
+from orch.errors import ConfigError
 from orch.repo import Repo
 
 from .conftest import FakeClaude, git
-from .helpers import DEV_OK, LEARN, checker, dev, finding, make_project
+from .helpers import (
+    DEV_OK,
+    LEARN,
+    checker,
+    dev,
+    finding,
+    make_project,
+    repo_home,
+    run_dir,
+)
 
 USAGE = {
     "is_error": True,
@@ -167,28 +177,41 @@ def test_report_written_after_last_phase(project: Path, fc: FakeClaude) -> None:
     )
     git(project, "commit", "-qam", "full qa")
     _run(project)
-    report = (project / ".orch" / "report.md").read_text()
+    report = (run_dir(project) / "report.md").read_text()
     assert ("FULL-TIER-OK" in report, "| dev |" in report) == (True, True)
 
 
 # ---- regressions from the phase 2-4 review
 
 
-def test_review_and_qa_inputs_exist_inside_their_worktree(
+def test_review_and_qa_inputs_are_readable_from_their_worktree(
     project: Path, fc: FakeClaude
 ) -> None:
+    assert _run(project, scenario="full").status == S.DONE
+    for call in fc.calls("orch-review") + fc.calls("orch-qa"):
+        argv = call["argv"]
+        inputs = Path(argv[argv.index("-p") + 1].split()[1])
+        assert (call["cwd"] != str(project), inputs.is_file()) == (True, True)
+        assert str(Repo(project).home) in argv, "the run dir is an --add-dir"
+
+
+def test_in_repo_inputs_exist_inside_their_worktree(
+    project: Path, fc: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ORCH_HOME", "repo")  # run files committed on the branch
+    run = ".orch/runs/*/phases/01-p1/inputs"
     fc.on(
         "orch-review",
         {
             "structured": checker(),
-            "actions": [{"sh": "test -f .orch/phases/01-p1/inputs/review.md"}],
+            "actions": [{"sh": f"test -f {run}/review.md"}],
         },
     )
     fc.on(
         "orch-qa",
         {
             "structured": checker(),
-            "actions": [{"sh": "test -f .orch/phases/01-p1/inputs/qa.md"}],
+            "actions": [{"sh": f"test -f {run}/qa.md"}],
         },
     )
     assert _run(project, scenario="full").status == S.DONE
@@ -236,19 +259,28 @@ def test_full_scenario_keeps_shipped_lows_and_preexisting(
     pre["preexisting"] = [finding("RP1", "high", "old bug")]
     fc.on("orch-review", {"structured": pre})
     _run(project, scenario="full")
-    backlog = (project / ".orch" / "backlog.md").read_text()
+    backlog = (repo_home(project) / "backlog.md").read_text()
     assert (
         "**R1**: nit [low]" in backlog,
         "**RP1**: old bug [preexisting]" in backlog,
     ) == (True, True)
 
 
-def test_dev_commits_never_contain_orch_state(project: Path, fc: FakeClaude) -> None:
+def test_run_branch_has_code_commits_only(project: Path, fc: FakeClaude) -> None:
+    st = _run(project)
+    subjects = git(project, "log", "--format=%s", f"main..{st.branch}").splitlines()
+    changed = git(project, "diff", "--name-only", f"main..{st.branch}")
+    assert (set(subjects), changed) == ({"work on work.txt"}, "work.txt")
+
+
+def test_in_repo_dev_commits_never_contain_orch_state(
+    project: Path, fc: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ORCH_HOME", "repo")
     _run(project)
-    files = git(project, "show", "--name-only", "--format=", "HEAD~0", "--", "work.txt")
     dev_commit = git(project, "log", "--format=%H", "-1", "--", "work.txt")
     changed = git(project, "show", "--name-only", "--format=", dev_commit)
-    assert (files, ".orch" in changed) == ("", False)
+    assert ".orch" not in changed
 
 
 def test_bad_output_from_dev_asks_the_same_session(
@@ -289,26 +321,47 @@ def test_new_lead_crash_retries_fresh_not_resume(project: Path, fc: FakeClaude) 
     assert (st.status, [c["resume"] for c in calls]) == (S.DONE, [False, False])
 
 
-def test_finished_run_is_archived_and_a_new_one_starts(
-    project: Path, fc: FakeClaude
-) -> None:
-    st1 = _run(project)
-    git(project, "switch", "-q", "main")
-    git(project, "merge", "-q", "--no-edit", st1.branch)
+def _next_brief(project: Path) -> None:
+    """Replace the hand-written briefs with one new one."""
+    git(project, "rm", "-rq", ".orch/phases")
     d = project / ".orch" / "phases" / "02-more"
-    d.mkdir()
+    d.mkdir(parents=True)
     (d / "brief.md").write_text("# More\n")
     git(project, "add", "-A")
     git(project, "commit", "-qm", "next phase")
+
+
+def test_finished_run_stays_and_a_new_one_starts(project: Path, fc: FakeClaude) -> None:
+    st1 = _run(project)
+    git(project, "switch", "-q", "main")
+    git(project, "merge", "-q", "--no-edit", st1.branch)
+    _next_brief(project)
     st2 = _run(project)
     assert (st2.run_id != st1.run_id, [p.slug for p in st2.phases]) == (True, ["more"])
-    assert (project / ".orch" / "runs" / st1.run_id / "state.json").is_file()
+    assert (Repo(project).runs / st1.run_id / "state.json").is_file()
+    assert (run_dir(project) / "phases" / "02-more" / "brief.md").is_file()
 
 
-def test_final_state_is_pushed(project: Path, fc: FakeClaude) -> None:
+def test_briefs_a_finished_run_ran_are_not_run_again(
+    project: Path, fc: FakeClaude
+) -> None:
+    _run(project)
+    git(project, "switch", "-q", "main")
+    with pytest.raises(ConfigError, match="already run in run"):
+        _run(project)
+
+
+def test_in_repo_final_state_is_pushed(
+    project: Path, fc: FakeClaude, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ORCH_HOME", "repo")
     st = _run(project)
-    remote = json.loads(git(project, "show", f"origin/{st.branch}:.orch/state.json"))
+    path = f".orch/runs/{st.run_id}/state.json"
+    remote = json.loads(git(project, "show", f"origin/{st.branch}:{path}"))
     assert remote["status"] == S.DONE
+    tracked = git(project, "ls-files", ".orch").splitlines()
+    assert ".orch/sessions.jsonl.lock" not in tracked
+    assert ".orch/sessions.jsonl" in tracked
 
 
 def test_reopened_blocked_phase_does_not_duplicate_backlog(
@@ -338,7 +391,7 @@ def test_reopened_blocked_phase_does_not_duplicate_backlog(
     )
     assert _run(project, scenario="full").status == S.BLOCKED
     assert _run(project, scenario=None).status == S.BLOCKED
-    backlog = (project / ".orch" / "backlog.md").read_text()
+    backlog = (repo_home(project) / "backlog.md").read_text()
     assert backlog.count("**R2**") == 1
 
 
@@ -396,11 +449,7 @@ def test_archiving_on_the_old_run_branch_warns(
     project: Path, fc: FakeClaude, capsys: pytest.CaptureFixture[str]
 ) -> None:
     st1 = _run(project)
-    d = project / ".orch" / "phases" / "02-more"
-    d.mkdir()
-    (d / "brief.md").write_text("# More\n")
-    git(project, "add", "-A")
-    git(project, "commit", "-qm", "next phase")
+    _next_brief(project)
     capsys.readouterr()
     _run(project)
     assert st1.branch in capsys.readouterr().err
