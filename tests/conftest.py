@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from typer_agentic import DEFAULT_AGENT_ENV_VARS
+
+# orch.ui picks agent mode and console width at import, from the environment. Pin both
+# before any test imports orch, so a run under Claude Code (agent mode, width 200)
+# renders the same as CI (human mode, Rich's 80-column fallback truncates tables).
+for _var in DEFAULT_AGENT_ENV_VARS:
+    os.environ.pop(_var, None)
+os.environ["COLUMNS"] = "200"
 
 FAKE = Path(__file__).with_name("fake_claude.py")
 
