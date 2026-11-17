@@ -12,7 +12,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from orch import claude, gitops, render, store
+from orch import claude, gitops, live, render, store
 from orch import layers as L
 from orch import state as S
 from orch.errors import ConfigError
@@ -24,6 +24,7 @@ from orch.loop import (
     discover_phases,
     ensure_gitignore,
     execute,
+    live_info,
     load_state,
     log_session,
     new_run_id,
@@ -356,13 +357,17 @@ def _session(run: Run, key: str, role: str, inputs: str) -> dict[str, Any]:
         entries.append(("cli:--set", run.cli_sets))
     res = L.resolve_role(run.layers, sc, role, L.TaskLayer(tuple(entries)))
     for attempt in (1, 2):
-        r = claude.run_session(
-            res.config,
-            run.rel(inputs_path),
-            run.root,
-            schema=SCHEMAS[role],
-            add_dirs=run.add_dirs(),
-        )
+        sid = claude.new_session_id()
+        info = live_info(run, (0, "planning"), (key, role), res.config)
+        with live.tracking(run.repo.base, sid, info):
+            r = claude.run_session(
+                res.config,
+                run.rel(inputs_path),
+                run.root,
+                schema=SCHEMAS[role],
+                session_id=sid,
+                add_dirs=run.add_dirs(),
+            )
         rec = session_record(key, role, r)
         run.st.plan_sessions.append(rec)
         run.save()

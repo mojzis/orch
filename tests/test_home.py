@@ -4,13 +4,15 @@ and the brief guard that replaces the commit check for files outside the repo.""
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from orch import claude, loop, planning
 from orch import home as H
-from orch import planning
 from orch import state as S
 from orch.cli import app
 from orch.errors import ConfigError
@@ -128,6 +130,48 @@ def test_run_leaves_the_repo_clean_and_logs_every_session(
         str(project),
     )
     assert {"model", "effort", "exit", "duration_s", "tokens_in"} <= set(first)
+
+
+def test_run_prints_one_line_per_session(
+    project: Path, fc: FakeClaude, capsys: pytest.CaptureFixture[str]
+) -> None:
+    st = _run(project)
+    assert st.status == S.DONE, st.stop_reason
+    lines = [ln for ln in capsys.readouterr().err.splitlines() if "phase 1" in ln]
+    assert [ln.split()[2] for ln in lines] == ["dev", "combined", "learnings"]
+    tokens = re.compile(r"\d+[kM]?/\d+[kM]? +\$ *\d+\.\d\d +ok")
+    assert all(tokens.search(ln) for ln in lines), lines
+
+
+def test_step_line_shows_verdict_findings_and_failure() -> None:
+    rec = S.SessionRecord(
+        key="review",
+        role="review",
+        session_id="s",
+        ok=True,
+        cost=1.234,
+        error_kind=None,
+        tokens_in=1_250_000,
+        tokens_out=34_000,
+    )
+    ok = claude.SessionResult(
+        session_id="s",
+        ok=True,
+        error_kind=None,
+        error="",
+        structured={"verdict": "fix", "findings": [{}, {}]},
+        cost_total=1.234,
+        cost_delta=1.234,
+        duration_s=252,
+    )
+    line = loop.step_line(2, rec, ok)
+    assert line.split() == [
+        "phase", "2", "review", "4m12s", "1.2M/34k", "$", "1.23",
+        "ok", "fix,", "2", "findings",
+    ]  # fmt: skip
+    bad = replace(ok, ok=False, error_kind="budget", error="max budget\nmore")
+    assert loop.step_line(0, rec, bad).split()[0] == "plan"
+    assert loop.step_line(0, rec, bad).endswith("FAILED budget: max budget")
 
 
 def test_session_editing_its_brief_is_caught_and_undone(

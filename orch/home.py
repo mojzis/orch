@@ -7,6 +7,7 @@ run branch), for machines whose home directory does not last, like Claude Code o
 the web or CI.
 
     <home>/sessions.jsonl                 one line per session, every repo and run
+    <home>/live/<session>.json            sessions running now (`orch ps`)
     <home>/repos/<owner>/<repo>/          backlog.md, process-learnings.md, cache/
     <home>/repos/<owner>/<repo>/runs/<id> state.json, plan.md, phases/, report.md
 """

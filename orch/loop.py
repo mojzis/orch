@@ -19,7 +19,7 @@ from typing import Any, NoReturn
 
 import yaml
 
-from orch import claude, gitops, pr, render, store
+from orch import claude, gitops, live, pr, render, store
 from orch import home as H
 from orch import layers as L
 from orch import state as S
@@ -1008,7 +1008,14 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
             # run files in the repo: commit them (pending included) so dev's
             # `git add -A` and the gate's clean-tree check never see them
             _commit_orch(run, f"orch: phase {ph.n} before {key}")
-        with _briefs_guarded(run, ph, key):
+        with (
+            _briefs_guarded(run, ph, key),
+            live.tracking(
+                run.repo.base,
+                str(sid),
+                live_info(run, (ph.n, ph.slug), (key, role), res.config),
+            ),
+        ):
             r = claude.run_session(
                 res.config,
                 run.rel(inputs_path),
@@ -1168,6 +1175,32 @@ def _record_session(  # noqa: PLR0913 -- the session and where it ran
     log_session(run, (ph.n, ph.slug), rec, r, cfg=cfg, cwd=cwd)
 
 
+def repo_label(run: Run) -> str:
+    """`owner/repo` with a home, the directory name without one."""
+    if run.repo.base:
+        return str(run.repo.home.relative_to(run.repo.base / "repos"))
+    return run.root.name
+
+
+def live_info(
+    run: Run,
+    phase: tuple[int, str],
+    step: tuple[str, str],
+    cfg: claude.StepConfig,
+) -> dict[str, Any]:
+    """What `orch ps` shows about a running session."""
+    return {
+        "repo": repo_label(run),
+        "run_id": run.st.run_id,
+        "phase": phase[0],  # 0 = planning
+        "phase_slug": phase[1],
+        "key": step[0],
+        "role": step[1],
+        "model": cfg.model,
+        "root": str(run.root),
+    }
+
+
 def log_session(  # noqa: PLR0913 -- one line of sessions.jsonl
     run: Run,
     phase: tuple[int, str],
@@ -1179,9 +1212,7 @@ def log_session(  # noqa: PLR0913 -- one line of sessions.jsonl
 ) -> None:
     """Append the session to sessions.jsonl, across every repo and run."""
     row = {
-        "repo": str(run.repo.home.relative_to(run.repo.base / "repos"))
-        if run.repo.base
-        else run.root.name,
+        "repo": repo_label(run),
         "run_id": run.st.run_id,
         "branch": run.st.branch,
         "phase": phase[0],  # 0 = planning
@@ -1194,6 +1225,34 @@ def log_session(  # noqa: PLR0913 -- one line of sessions.jsonl
         "cwd": str(cwd),
     }
     H.append_session(run.repo.sessions_log, row)
+    err.print(step_line(phase[0], rec, r), markup=False, highlight=False)
+
+
+def _tokens(n: int) -> str:
+    if n >= 1_000_000:  # noqa: PLR2004
+        return f"{n / 1_000_000:.1f}M"
+    return f"{n / 1000:.0f}k" if n >= 1000 else str(n)  # noqa: PLR2004
+
+
+def step_line(phase: int, rec: S.SessionRecord, r: claude.SessionResult) -> str:
+    """One line per finished session: where, how long, tokens, cost, outcome."""
+    m, s = divmod(round(r.duration_s), 60)
+    where = "plan" if phase == 0 else f"phase {phase}"
+    if r.ok:
+        out = r.structured or {}
+        verdict = out.get("verdict") or out.get("decision")
+        outcome = "ok" + (f" {verdict}" if verdict else "")
+        if isinstance(out.get("findings"), list):
+            outcome += f", {len(out['findings'])} findings"
+    else:
+        outcome = (
+            f"FAILED {r.error_kind}: {r.error.splitlines()[0][:80] if r.error else ''}"
+        )
+    return (
+        f"  {where} {rec.key:<14} {m:>3}m{s:02d}s  "
+        f"{_tokens(rec.tokens_in):>6}/{_tokens(rec.tokens_out):<5}  "
+        f"${rec.cost:6.2f}  {outcome}"
+    )
 
 
 BRIEF_GLOBS = ("brief.md", "fix-brief-*.md", "gate-fix-*.md")
