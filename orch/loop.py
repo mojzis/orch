@@ -1194,6 +1194,34 @@ def log_session(  # noqa: PLR0913 -- one line of sessions.jsonl
         "cwd": str(cwd),
     }
     H.append_session(run.repo.sessions_log, row)
+    err.print(step_line(phase[0], rec, r), markup=False, highlight=False)
+
+
+def _tokens(n: int) -> str:
+    if n >= 1_000_000:  # noqa: PLR2004
+        return f"{n / 1_000_000:.1f}M"
+    return f"{n / 1000:.0f}k" if n >= 1000 else str(n)  # noqa: PLR2004
+
+
+def step_line(phase: int, rec: S.SessionRecord, r: claude.SessionResult) -> str:
+    """One line per finished session: where, how long, tokens, cost, outcome."""
+    m, s = divmod(round(r.duration_s), 60)
+    where = "plan" if phase == 0 else f"phase {phase}"
+    if r.ok:
+        out = r.structured or {}
+        verdict = out.get("verdict") or out.get("decision")
+        outcome = "ok" + (f" {verdict}" if verdict else "")
+        if isinstance(out.get("findings"), list):
+            outcome += f", {len(out['findings'])} findings"
+    else:
+        outcome = (
+            f"FAILED {r.error_kind}: {r.error.splitlines()[0][:80] if r.error else ''}"
+        )
+    return (
+        f"  {where} {rec.key:<14} {m:>3}m{s:02d}s  "
+        f"{_tokens(rec.tokens_in):>6}/{_tokens(rec.tokens_out):<5}  "
+        f"${rec.cost:6.2f}  {outcome}"
+    )
 
 
 BRIEF_GLOBS = ("brief.md", "fix-brief-*.md", "gate-fix-*.md")
