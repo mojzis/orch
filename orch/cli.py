@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import contextlib
+import time
 from enum import StrEnum
 from importlib import resources
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.console import Group, RenderableType
+from rich.live import Live
 from rich.table import Table
+from rich.text import Text
 from typer_agentic import agent_errors
 
+from orch import home as H
 from orch import layers as L
-from orch import loop, migrate, planning
+from orch import live, loop, migrate, planning
 from orch import state as S
 from orch.errors import OrchError
 from orch.repo import find_repo, init_repo
@@ -145,6 +151,72 @@ def status(run_id: RunOpt = None) -> None:
         raise _fail(e) from None
     _print_status(st)
     console.print(f"run files: {repo.run_dir}", markup=False)
+
+
+@app.command()
+def ps(
+    watch: Annotated[
+        bool, typer.Option("--watch", "-w", help="Keep refreshing until Ctrl+C.")
+    ] = False,
+    every: Annotated[
+        float, typer.Option("--every", help="Seconds between refreshes with --watch.")
+    ] = 2.0,
+) -> None:
+    """Show every orch session running on this machine, in any repo: its step,
+    how long it has run and what it did last. Run from anywhere."""
+    home = H.orch_home()
+    if home is None:
+        err.print('error: orch\'s home is the repo (home = "repo")', markup=False)
+        err.print("hint: orch ps needs a home; see `orch guide tune`", markup=False)
+        raise typer.Exit(2)
+    if not watch:
+        console.print(_ps_view(home))
+        return
+    with (
+        Live(_ps_view(home), console=console, auto_refresh=False) as view,
+        contextlib.suppress(KeyboardInterrupt),
+    ):
+        while True:
+            time.sleep(every)
+            view.update(_ps_view(home), refresh=True)
+
+
+def _ps_view(home: Path) -> RenderableType:
+    found, stale = live.sessions(home)
+    now = time.time()
+    parts: list[RenderableType] = []
+    if found:
+        t = Table(
+            "repo",
+            "run",
+            "step",
+            "model",
+            "running",
+            "last write",
+            "doing",
+            box=TABLE_BOX,
+        )
+        for s in found:
+            m = s.marker
+            n = int(m.get("phase") or 0)
+            where = "plan" if n == 0 else f"{n}-{m.get('phase_slug')}"
+            t.add_row(
+                str(m.get("repo")),
+                str(m.get("run_id")),
+                f"{where}/{m.get('key')}",
+                str(m.get("model") or "default"),
+                live.ago(live.since(str(m.get("started_at")), now)),
+                live.ago(now - s.last_write) + " ago"
+                if s.last_write
+                else "no transcript",
+                s.last_action,
+            )
+        parts.append(t)
+    else:
+        parts.append(Text("no orch sessions running"))
+    if stale:
+        parts.append(Text(f"removed {stale} stale marker(s) left by a dead orch"))
+    return Group(*parts)
 
 
 @app.command(name="migrate")

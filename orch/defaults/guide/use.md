@@ -5,6 +5,7 @@
 | start, or carry on after any stop | `orch run` |
 | plan only, read it first | `orch plan` (or `orch run --pause`) |
 | where is the run, where are its files | `orch status` (`--run <id>` for another run) |
+| is anything running, is it moving (any repo) | `orch ps` (`--watch` to keep refreshing) |
 | what will each step run, and why | `orch config` |
 | scenarios and templates available | `orch config --scenarios` |
 | change one step's prompt for this repo | `orch eject <template>` |

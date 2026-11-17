@@ -19,7 +19,7 @@ from typing import Any, NoReturn
 
 import yaml
 
-from orch import claude, gitops, pr, render, store
+from orch import claude, gitops, live, pr, render, store
 from orch import home as H
 from orch import layers as L
 from orch import state as S
@@ -1008,7 +1008,14 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
             # run files in the repo: commit them (pending included) so dev's
             # `git add -A` and the gate's clean-tree check never see them
             _commit_orch(run, f"orch: phase {ph.n} before {key}")
-        with _briefs_guarded(run, ph, key):
+        with (
+            _briefs_guarded(run, ph, key),
+            live.tracking(
+                run.repo.base,
+                str(sid),
+                live_info(run, (ph.n, ph.slug), (key, role), res.config),
+            ),
+        ):
             r = claude.run_session(
                 res.config,
                 run.rel(inputs_path),
@@ -1168,6 +1175,32 @@ def _record_session(  # noqa: PLR0913 -- the session and where it ran
     log_session(run, (ph.n, ph.slug), rec, r, cfg=cfg, cwd=cwd)
 
 
+def repo_label(run: Run) -> str:
+    """`owner/repo` with a home, the directory name without one."""
+    if run.repo.base:
+        return str(run.repo.home.relative_to(run.repo.base / "repos"))
+    return run.root.name
+
+
+def live_info(
+    run: Run,
+    phase: tuple[int, str],
+    step: tuple[str, str],
+    cfg: claude.StepConfig,
+) -> dict[str, Any]:
+    """What `orch ps` shows about a running session."""
+    return {
+        "repo": repo_label(run),
+        "run_id": run.st.run_id,
+        "phase": phase[0],  # 0 = planning
+        "phase_slug": phase[1],
+        "key": step[0],
+        "role": step[1],
+        "model": cfg.model,
+        "root": str(run.root),
+    }
+
+
 def log_session(  # noqa: PLR0913 -- one line of sessions.jsonl
     run: Run,
     phase: tuple[int, str],
@@ -1179,9 +1212,7 @@ def log_session(  # noqa: PLR0913 -- one line of sessions.jsonl
 ) -> None:
     """Append the session to sessions.jsonl, across every repo and run."""
     row = {
-        "repo": str(run.repo.home.relative_to(run.repo.base / "repos"))
-        if run.repo.base
-        else run.root.name,
+        "repo": repo_label(run),
         "run_id": run.st.run_id,
         "branch": run.st.branch,
         "phase": phase[0],  # 0 = planning
