@@ -20,7 +20,7 @@ orch/
   gitops.py       run branch, commit, push, detached worktrees, diff inspection
   gate.py         gate_cmd + "not evidence" diff checks (skip/xfail, deleted tests, QA.md)
   loop.py         phase runner: executes a scenario's steps, fix rounds, stop states
-  lead.py         lead session (one per phase, resumed): add checks, triage, learnings
+  lead.py         lead steps (fresh session each, state in the phase docs): add checks, triage, learnings
   planning.py     orch plan: outline + checks + outline review; per-phase brief + plan review
   report.py       run report
   defaults/       scenarios/*.toml, skills/orch-*/SKILL.md, guide/*.md

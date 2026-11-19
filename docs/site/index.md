@@ -7,8 +7,8 @@ verify, and pushes a commit.
 
 - **Code owns the loop and the state.** Every step reports structured JSON, and orch
   writes its own state file, so any stop can be resumed.
-- **A lead session makes the judgment calls**: which extra checks to run, what to fix,
-  when to ship.
+- **Lead sessions make the judgment calls**: which extra checks to run, what to fix,
+  when to ship. Each starts fresh and works from the phase docs.
 - **Worker sessions do the rest**, each one fresh, so dev's work is always checked by a
   different session.
 - **It never touches main.** Everything lands on an `orch/<run-id>` branch for you to

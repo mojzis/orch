@@ -1,5 +1,6 @@
 """`orch run`: code runs the phase loop and writes all state. Sessions build and
-check; the lead session makes the judgment calls through structured output."""
+check; lead sessions make the judgment calls through structured output, each
+starting fresh from the phase docs."""
 
 from __future__ import annotations
 
@@ -924,7 +925,7 @@ def worker(  # noqa: PLR0913 -- the step's identity plus where it runs
     cwd: Path | None = None,
 ) -> dict[str, Any]:
     """A fresh session. Retried once on a crash or bad output."""
-    rep = _step(run, ph, key, role, inputs, cwd=cwd, is_lead=False)
+    rep = _step(run, ph, key, role, inputs, cwd=cwd)
     if found := credential_failures(rep):
         _pause_for_credentials(run, ph, key, found, resumable=cwd is None)
     return rep
@@ -969,9 +970,10 @@ def lead(  # noqa: PLR0913 -- the step's identity plus its check
     *,
     check: Callable[[dict[str, Any]], str] | None = None,
 ) -> dict[str, Any]:
-    """The phase's lead session, resumed at each of its steps. `check` returns a
-    problem description; the lead gets one chance to correct its answer."""
-    return _step(run, ph, key, role, inputs, cwd=None, is_lead=True, check=check)
+    """A lead step: a fresh session that reads the phase docs its inputs list.
+    `check` returns a problem description; the lead gets one chance to correct
+    its answer."""
+    return _step(run, ph, key, role, inputs, cwd=None, check=check)
 
 
 def _step(  # noqa: PLR0913 -- one place that runs every session
@@ -982,7 +984,6 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
     inputs: str,
     *,
     cwd: Path | None,
-    is_lead: bool,
     check: Callable[[dict[str, Any]], str] | None = None,
 ) -> dict[str, Any]:
     if key in ph.done_steps:
@@ -999,8 +1000,8 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
     while True:
         attempts += 1
         carry_on = retry_sid or run.st.pending.get(pkey)
-        resume = bool(carry_on) or (is_lead and ph.lead_session is not None)
-        sid = carry_on or (ph.lead_session if resume else claude.new_session_id())
+        resume = bool(carry_on)
+        sid = carry_on or claude.new_session_id()
         with _LOCK:
             run.st.pending[pkey] = str(sid)
         run.save()
@@ -1016,16 +1017,12 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
                 schema=schema,
                 session_id=sid,
                 resume=resume,
-                prev_cost=_prev_cost(ph, key, sid, is_lead),
+                prev_cost=_prev_cost(ph, key, sid),
                 add_dirs=run.add_dirs(),
             )
             _record_session(
                 run, ph, (key, role), r, cfg=res.config, cwd=cwd or run.root
             )
-        if is_lead and (r.ok or resume):
-            ph.lead_session = r.session_id
-            if "total_cost_usd" in r.raw:  # an interrupted turn reports no total
-                ph.lead_cost_total = r.cost_total
         if INTERRUPTED.is_set():
             _keep_finished(run, ph, (key, pkey, role), r, checked=check is not None)
         with _LOCK:
@@ -1041,12 +1038,10 @@ def _step(  # noqa: PLR0913 -- one place that runs every session
                 inputs + f"\n## Your previous answer was rejected\n\n{problem}\n"
                 "Answer again, fixing exactly this.\n",
             )
+            retry_sid = r.session_id  # same role and schema: the cache holds
             continue
         _stop_unless_retryable(run, ph, pkey, r, res.config)
-        if is_lead and resume:
-            # the lead's session may live on another machine: start it fresh
-            ph.lead_session, ph.lead_cost_total = None, 0.0
-        elif r.error_kind == "bad_output" or role in ("dev", "fix"):
+        if r.error_kind == "bad_output" or role in ("dev", "fix"):
             # ask the same session for its report rather than redoing the work
             retry_sid = r.session_id
         if attempts >= 2:  # noqa: PLR2004 -- one retry, then stop
@@ -1128,11 +1123,9 @@ def _stop_unless_retryable(
         )
 
 
-def _prev_cost(ph: S.Phase, key: str, sid: str | None, is_lead: bool) -> float:
+def _prev_cost(ph: S.Phase, key: str, sid: str | None) -> float:
     """What the session had cost before this call: claude reports totals for the
     whole conversation on a resumed session."""
-    if is_lead and sid == ph.lead_session:
-        return ph.lead_cost_total
     return sum(s.cost for s in ph.sessions if s.key == key and s.session_id == sid)
 
 

@@ -20,7 +20,7 @@ runs in the cloud). Next step: the user creates the orch repo, then this plan se
 its `docs/`.
 
 
-`orch` takes a shaped pitch and delivers it phase by phase with Claude Code. It splits the pitch into an outline of phases once, then for each phase writes a detailed brief from the code as it is at that moment, reviews it, and runs it: dev, review and QA in parallel, fix, verify. Code owns the control flow and the state; a lead session makes the judgment calls; worker sessions do the rest. The loop is modelled on [happytube](happytube.md), which ran 8 phases this way by hand.
+`orch` takes a shaped pitch and delivers it phase by phase with Claude Code. It splits the pitch into an outline of phases once, then for each phase writes a detailed brief from the code as it is at that moment, reviews it, and runs it: dev, review and QA in parallel, fix, verify. Code owns the control flow and the state; lead sessions make the judgment calls; worker sessions do the rest. The loop is modelled on [happytube](happytube.md), which ran 8 phases this way by hand.
 
 ## At a glance
 
@@ -45,7 +45,7 @@ flowchart TD
   R --> E[Full QA tier + run report]
 ```
 
-The outline is made once. Each phase then starts with its own brief, written from the code as it is, and the lead session makes the calls in between: which extra checks to run, what to fix, and when to ship. Every finished phase is pushed.
+The outline is made once. Each phase then starts with its own brief, written from the code as it is, and the lead makes the calls in between: which extra checks to run, what to fix, and when to ship. Every finished phase is pushed.
 
 ## Input: the shaped pitch
 
@@ -125,7 +125,7 @@ The current run is the one whose `orch/<run-id>` branch is checked out, else the
 
 ## The phase loop: `orch run`
 
-Code runs the loop and writes all state. Worker sessions build and check. A **lead session**, one per phase and resumed at each of its steps, makes the judgment calls that the human-driven orchestrator made in happytube: which extra checks to run, what to fix, which fix design to pick, and when to ship. The lead writes only orch's own files, through structured output. The steps below are the default full scenario; the planner can pick another per phase.
+Code runs the loop and writes all state. Worker sessions build and check. The **lead**, a fresh session at each of its steps that reads the phase docs its inputs list, makes the judgment calls that the human-driven orchestrator made in happytube: which extra checks to run, what to fix, which fix design to pick, and when to ship. The lead writes only orch's own files, through structured output. The steps below are the default full scenario; the planner can pick another per phase.
 
 0. **Brief** (lead, then plan review), as above.
 1. **Dev** (fresh session). Implements the brief with tests in small commits, running the full typecheck before each one (the staged-only hook misses cross-file breakage). A real-data run is exploratory and commits nothing. Report: commits, tests against the baseline with every change explained, design, real-run results, `deviations` (including any workaround) and `unresolved_issues`.
@@ -140,7 +140,7 @@ Code runs the loop and writes all state. Worker sessions build and check. A **le
 
 | Session | Fresh or resumed | Tools | Model (default) |
 | --- | --- | --- | --- |
-| Lead | one per phase, resumed at each step | read + Bash, no code edits | strongest |
+| Lead | fresh at each step; the phase docs carry its state | read + Bash, no code edits | strongest |
 | Outline, outline review, plan review | fresh | read + Bash, no edits | strongest |
 | Dev, fix | fresh | all | mid-tier |
 | Review | fresh | read + Bash for repros, no edits | strongest |
@@ -304,4 +304,4 @@ The loop, the brief sections, the report fields and most defaults come from happ
 - [x] When replanning mid-run changes a later phase a lot, should orch still continue on its own, or stop and tell you? Decided 2026-10-28: continue, and report each replan with what changed in the run report.
 - [x] Should the functional QA session be allowed to add `proposed` oracles it discovers, for you to confirm later? Decided 2026-10-28: yes.
 - [ ] Default for a phase's open design choices: pause and ask you, or take the recommended options (`--auto-decide`) and list them in the run report?
-- [ ] Lead session: one resumed session per phase (keeps context, cheaper) or fresh at each step (independent, simpler)? The plan says resumed.
+- [x] Lead session: one resumed session per phase, or fresh at each step? Decided 2026-11-19: fresh at each step. The phase docs (brief, reports, log) already carry what the lead needs, and resuming was not cheaper: each lead step passes its own `--json-schema`, which changes the tool definitions and invalidates the prompt cache, so every resume rewrote the whole context (up to ~330k tokens on opus). On the deedum run the lead steps cost about $160 of $189. A rejected answer still resumes the same session within its step.

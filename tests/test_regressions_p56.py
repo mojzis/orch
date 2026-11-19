@@ -304,7 +304,7 @@ def test_interrupted_lead_cost_is_not_double_counted(
     lead = [s for s in st.phases[0].sessions if s.role in ("add_checks", "learnings")]
     recorded = sum(s.cost for s in lead)
     counters = json.loads(fake_claude.script.with_suffix(".counters.json").read_text())
-    true_total = counters["_costs"][st.phases[0].lead_session]
+    true_total = sum(counters["_costs"][sid] for sid in {s.session_id for s in lead})
     assert recorded == pytest.approx(true_total), (recorded, true_total, lead)
 
 
