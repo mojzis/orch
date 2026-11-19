@@ -3,7 +3,7 @@
 Delivers a shaped pitch phase by phase with fresh Claude Code sessions: an outline
 once, then for each phase a brief written from the code as it is, dev, a gate,
 review ‖ QA, triage, fix and verify, and a pushed commit. Code owns the loop and
-the state; a lead session makes the judgment calls; worker sessions do the rest.
+the state; lead sessions make the judgment calls; worker sessions do the rest.
 
 ```
 uv tool install --editable ~/git/orch   # or: uv run --project ~/git/orch orch ...

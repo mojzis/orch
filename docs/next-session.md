@@ -71,8 +71,7 @@ uv run pytest -m integration -o addopts= tests/test_live.py   # live, ~2 cents
   oracle per core requirement? orch reads ids with the regex `\bR\d+\b`.
 - The default for open design choices is to pause (`needs-user`). `--auto-decide`
   takes the recommended options and records them in the report's replans.
-- If the lead's session is gone (another machine), orch starts a fresh lead session
-  from the files.
+- Each lead step is a fresh session that works from the phase files.
 
 ## Deferred features (from the spec, unchanged)
 

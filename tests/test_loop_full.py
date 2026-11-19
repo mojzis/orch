@@ -202,6 +202,7 @@ def test_lead_missing_a_check_is_asked_again(project: Path, fc: FakeClaude) -> N
     st = _run(project)
     calls = fc.calls("orch-add-checks")
     assert (st.status, len(calls), calls[1]["resume"]) == (S.DONE, 2, True)
+    assert calls[0]["session"] == calls[1]["session"]
 
 
 def test_triage_leaving_a_finding_out_is_asked_again(
@@ -225,9 +226,7 @@ def test_triage_leaving_a_finding_out_is_asked_again(
     )
 
 
-def test_lead_is_one_session_resumed_across_steps(
-    project: Path, fc: FakeClaude
-) -> None:
+def test_each_lead_step_starts_a_fresh_session(project: Path, fc: FakeClaude) -> None:
     fc.on("orch-review", {"structured": checker("fix", finding("R1"))})
     fc.on("orch-triage", triage("fix", must_fix=[must("R1")]))
     _run(project)
@@ -236,8 +235,8 @@ def test_lead_is_one_session_resumed_across_steps(
         for c in fc.calls()
         if c["template"] in ("orch-add-checks", "orch-triage", "orch-learnings")
     ]
-    assert len({c["session"] for c in lead_calls}) == 1
-    assert [c["resume"] for c in lead_calls] == [False, True, True]
+    assert len({c["session"] for c in lead_calls}) == len(lead_calls) == 3
+    assert not any(c["resume"] for c in lead_calls)
 
 
 def test_lead_cost_is_counted_per_step_not_cumulative(

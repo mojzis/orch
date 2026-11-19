@@ -49,8 +49,6 @@ class Phase:
     fix_round: int = 0
     attempt: int = 0  # bumped when a blocked phase is reopened
     deferred: list[str] = field(default_factory=list)  # finding ids in the backlog
-    lead_session: str | None = None
-    lead_cost_total: float = 0.0
     sessions: list[SessionRecord] = field(default_factory=list)
     base: str | None = None  # HEAD when the phase started
     commit: str | None = None
