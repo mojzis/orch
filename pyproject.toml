@@ -39,7 +39,7 @@ dev = [
     "deptry",
     "interrogate",
     "poethepoet",
-    "zensical>=0.1.1",
+    "zensical>=0.1.2",
 ]
 
 [tool.ruff]
